@@ -1,0 +1,77 @@
+"""Unit tests for cross-model transforms and R^2 scoring."""
+
+import numpy as np
+import pytest
+
+from repsim.transforms import (
+    evaluate_transform,
+    fit_linear,
+    fit_rigid,
+    r2_score,
+)
+
+
+def test_r2_perfect_and_mean_baseline():
+    target = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    assert r2_score(target, target) == pytest.approx(1.0)
+    mean_pred = np.broadcast_to(target.mean(0), target.shape)
+    assert r2_score(mean_pred, target) == pytest.approx(0.0)
+
+
+def test_linear_recovers_affine_map():
+    rng = np.random.default_rng(0)
+    source = rng.normal(size=(200, 5))
+    weight = rng.normal(size=(5, 3))
+    bias = rng.normal(size=3)
+    target = source @ weight + bias
+
+    transform = fit_linear(source, target)
+    assert r2_score(transform.apply(source), target) == pytest.approx(1.0, abs=1e-8)
+
+
+def test_linear_handles_different_dimensions():
+    rng = np.random.default_rng(1)
+    source = rng.normal(size=(100, 8))
+    target = rng.normal(size=(100, 4))
+    transform = fit_linear(source, target)
+    assert transform.apply(source).shape == (100, 4)
+
+
+def test_rigid_recovers_rotation_and_scale():
+    rng = np.random.default_rng(2)
+    source = rng.normal(size=(300, 4))
+    rotation, _ = np.linalg.qr(rng.normal(size=(4, 4)))
+    target = 2.5 * (source @ rotation) + np.array([1.0, -2.0, 0.5, 3.0])
+
+    transform = fit_rigid(source, target)
+    assert transform.scale == pytest.approx(2.5, rel=1e-2)
+    pred = transform.apply(source)
+    assert r2_score(pred, transform.project_target(target)) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_rigid_projects_to_min_dimension():
+    rng = np.random.default_rng(3)
+    source = rng.normal(size=(120, 6))
+    target = rng.normal(size=(120, 3))
+    transform = fit_rigid(source, target)
+    assert transform.apply(source).shape == (120, 3)
+
+
+def test_evaluate_transform_returns_train_and_eval_r2():
+    rng = np.random.default_rng(4)
+    source = rng.normal(size=(200, 5))
+    weight = rng.normal(size=(5, 3))
+    target = source @ weight + rng.normal(size=3)
+    half = 100
+    r2_train, r2_eval = evaluate_transform(
+        "linear", source[:half], target[:half], source[half:], target[half:]
+    )
+    # A noiseless affine relation generalises perfectly on both splits.
+    assert r2_train == pytest.approx(1.0, abs=1e-8)
+    assert r2_eval == pytest.approx(1.0, abs=1e-8)
+
+
+def test_evaluate_transform_unknown_kind():
+    x = np.zeros((4, 2))
+    with pytest.raises(ValueError):
+        evaluate_transform("nonsense", x, x, x, x)

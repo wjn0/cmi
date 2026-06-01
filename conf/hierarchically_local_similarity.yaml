@@ -1,0 +1,98 @@
+# ============================================================================
+# Experiment: hierarchically_local_similarity
+# ============================================================================
+# Question: how well can one pretrained vision model's representation be mapped
+# onto another's, and how does that alignment quality depend on the *granularity*
+# (breadth) of the region of the ImageNet/WordNet label hierarchy we measure it
+# over? Hypothesis: alignment is *hierarchically local* -- finer (narrower)
+# regions align better than coarser (broader) ones.
+#
+# Procedure:
+#   1. Choose target nodes in the WordNet noun hierarchy: an explicit list plus
+#      `n_random_targets` randomly sampled internal nodes whose subtree holds
+#      between `random_target_min_classes` and `random_target_max_classes` leaf
+#      classes (so each target sits at a moderate, central granularity).
+#   2. For each target T, build a connected chain of evaluation nodes spanning a
+#      range of granularities: `max_descendant_levels` levels of hyponyms below T
+#      (finer), T itself, and `max_ancestor_levels` ancestors above T (coarser).
+#      Each node n carries the ImageNet leaf classes in its subtree; node breadth
+#      |classes(n)| is the continuous granularity axis.
+#   3. NULL CONTROL: for each distinct breadth k present among the real nodes,
+#      draw `null_replicates` random k-class subsets of the full 1000-class pool.
+#      These match real nodes on class count but carry no semantic coherence, so
+#      comparing them isolates locality from breadth alone.
+#   4. Embed every image in the full 1000-class pool ONCE with each model M_i,
+#      using its native pooled feature f_i(x) in R^{d_i} (DINOv2 CLS pooler,
+#      SigLIP attention-pooled head, MAE mean-pooled patch tokens). Up to
+#      `per_class_limit` images per class (shared seed).
+#   5. At each node n, take a FIXED-size random split of its images: `n_fit_samples`
+#      fit images and a disjoint `n_eval_samples` held-out images. The fixed sizes
+#      remove the sample-size confound (R^2 depends on fit-set size, which would
+#      otherwise track breadth). Skip any node that cannot supply both counts.
+#      On the fit split fit transforms T_{i->j} between every ordered model pair:
+#        - linear: affine least squares  min_{W,b} || f_i W + b - f_j ||_F
+#        - rigid : reduce f_i, f_j to k = min(d_i,d_j) PCA dims, then a
+#                  similarity map  z -> s (z R) + t  (orthogonal R, scalar s)
+#                  via Procrustes/Umeyama (reflections allowed).
+#      Report R^2 = 1 - SS_res/SS_tot (pooled over output dims) in-sample (fit
+#      split, to detect overfitting) and on the held-out split.
+#
+# Held-out images are a disjoint random subset of the SAME node's images (same
+# class mix, unseen samples) rather than a separate split, so even breadth-2
+# nodes -- where the validation split's ~50 images/class is too thin -- get a
+# large, balanced held-out set.
+#
+# Output: results.csv, one row per (target, node, ordered model pair, transform).
+# ============================================================================
+
+seed: 0
+
+# Targets ------------------------------------------------------------------
+target_nodes: [feline]       # explicit starting nodes (WordNet lemma or synset)
+n_random_targets: 75         # additional randomly sampled starting nodes
+random_target_min_classes: 5 # min ImageNet leaf classes in a sampled target's subtree
+random_target_max_classes: 40 # max (keeps each target's central granularity moderate)
+
+# Hierarchy ----------------------------------------------------------------
+max_ancestor_levels: 4       # ancestor (coarser) levels above each target
+max_descendant_levels: 3     # descendant (finer) levels below each target
+null_replicates: 4           # random size-matched null nodes per distinct breadth
+
+# Sampling & data sufficiency ----------------------------------------------
+# Held-out is a disjoint random split of each node's own images, so a node needs
+# n_fit_samples + n_eval_samples images. At n_fit=3840 a node needs >= 5 classes
+# (5 x ~1000 > 4090), so the finest evaluated nodes have breadth 5.
+# NOTE: n_fit ~ 2 x d_model (e.g. 1536) makes the affine map badly overfit --
+# held-out R^2 collapses to ~0. n_fit = 5 x d_model (3840) generalizes
+# (held-out R^2 ~ 0.39). To reach breadth-2..4 nodes instead, regularize the fit
+# (ridge, alpha ~ 100 recovers held-out R^2 ~ 0.34 at n_fit=1536).
+per_class_limit: 1000        # images per class drawn from the pool
+n_fit_samples: 3840          # fixed fit images per node (= 5 x d_model=768).
+                             # Must exceed d_model or the transform is under-determined.
+n_eval_samples: 250          # fixed held-out images per node for held-out R^2.
+
+# Models -------------------------------------------------------------------
+# pooling: "pooler" (transformers pooler_output) | "head" (timm head) | "avg" (timm mean)
+models:
+  - {name: dinov2, backend: transformers, hf_id: facebook/dinov2-base,                  pooling: pooler}
+  - {name: siglip, backend: timm,         hf_id: vit_base_patch16_siglip_224.v2_webli,  pooling: head}
+  - {name: mae,    backend: timm,         hf_id: vit_base_patch16_224.mae,              pooling: avg}
+
+# Dataset ------------------------------------------------------------------
+dataset:
+  hf_id: benjamin-paine/imagenet-1k-256x256
+  split: train               # single split; held-out is carved from each node
+
+# Transforms & evaluation --------------------------------------------------
+transforms: [linear]         # add `rigid` (PCA + similarity Procrustes) to also fit
+                             # the orthogonal-map+translation+scale transform; its
+                             # per-node PCA/SVD fits are markedly slower than linear.
+
+# Runtime ------------------------------------------------------------------
+batch_size: 64
+device: cuda                 # fails loudly if CUDA is unavailable
+cache_dir: ./outputs/embeddings
+
+hydra:
+  job:
+    chdir: false             # keep cwd at project root so cache_dir stays stable
