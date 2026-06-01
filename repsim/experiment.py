@@ -20,6 +20,8 @@ class sets of equal size.
 
 from __future__ import annotations
 
+import logging
+import time
 from pathlib import Path
 
 import numpy as np
@@ -39,7 +41,10 @@ from repsim.inference import Embeddings, build_sample_index, extract_embeddings
 from repsim.models import LoadedModel, ModelSpec
 from repsim.transforms import evaluate_transform, fit_whitening
 
+log = logging.getLogger(__name__)
+
 _NULL_KEY = "__random__"
+_LOG_EVERY = 25  # log eval progress every this many nodes
 
 
 def _resolve_device(requested: str) -> str:
@@ -111,11 +116,14 @@ def run_experiment(cfg: DictConfig, output_dir: Path | None = None) -> pd.DataFr
 
     target_nodes = _build_all_nodes(cfg)
     n_real = sum(len(v) for k, v in target_nodes.items() if k != _NULL_KEY)
-    print(f"{len(target_nodes) - 1} targets, {n_real} hierarchy nodes, "
-          f"{len(target_nodes[_NULL_KEY])} null nodes. "
-          f"Inference pool: all {len(all_class_indices())} classes.")
-    print(f"Per-class limit: {per_class_limit}; fixed fit/eval samples per node: "
-          f"{cfg.n_fit_samples}/{cfg.n_eval_samples} (d_model={max_dim}).")
+    log.info(
+        "%d targets, %d hierarchy nodes, %d null nodes. Inference pool: all %d classes.",
+        len(target_nodes) - 1, n_real, len(target_nodes[_NULL_KEY]), len(all_class_indices()),
+    )
+    log.info(
+        "Per-class limit: %d; fixed fit/eval samples per node: %d/%d (d_model=%d); whiten=%s.",
+        per_class_limit, cfg.n_fit_samples, cfg.n_eval_samples, max_dim, cfg.get("whiten", False),
+    )
 
     dataset = load_dataset(cfg.dataset.hf_id)[cfg.dataset.split]
     labels = np.array(dataset["label"])
@@ -131,7 +139,7 @@ def run_experiment(cfg: DictConfig, output_dir: Path | None = None) -> pd.DataFr
     out_dir = output_dir or Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
     results.to_csv(out_dir / "results.csv", index=False)
-    print(f"Wrote {len(results)} rows to {out_dir / 'results.csv'}")
+    log.info("Wrote %d rows to %s", len(results), out_dir / "results.csv")
     return results
 
 
@@ -161,42 +169,54 @@ def _evaluate(
     rng = np.random.default_rng(cfg.seed)
     records: list[dict] = []
     skipped = 0
-    for target, nodes in target_nodes.items():
-        for node in nodes:
-            rows = np.flatnonzero(np.isin(sample_classes, node.class_indices))
-            if rows.size < n_fit + n_eval:
-                skipped += 1
-                continue
-            shuffled = rng.permutation(rows)
-            fit_idx, eval_idx = shuffled[:n_fit], shuffled[n_fit : n_fit + n_eval]
-            for src in models:
-                for tgt in models:
-                    if src.spec.name == tgt.spec.name:
-                        continue
-                    xs_tr, ys_tr = embeddings[src.spec.name][fit_idx], embeddings[tgt.spec.name][fit_idx]
-                    xs_ev, ys_ev = embeddings[src.spec.name][eval_idx], embeddings[tgt.spec.name][eval_idx]
-                    if whiten:
-                        wx, wy = fit_whitening(xs_tr), fit_whitening(ys_tr)
-                        xs_tr, ys_tr = wx.apply(xs_tr), wy.apply(ys_tr)
-                        xs_ev, ys_ev = wx.apply(xs_ev), wy.apply(ys_ev)
-                    for kind in cfg.transforms:
-                        r2_train, r2_eval = evaluate_transform(kind, xs_tr, ys_tr, xs_ev, ys_ev)
-                        records.append({
-                            "target": target,
-                            "node": node.key,
-                            "node_label": node.label,
-                            "relation": node.relation,
-                            "grouping": node.grouping,
-                            "depth": node.depth,
-                            "n_classes": len(node.class_indices),
-                            "n_train": n_fit,
-                            "n_eval": n_eval,
-                            "source": src.spec.name,
-                            "target_model": tgt.spec.name,
-                            "transform": kind,
-                            "whiten": bool(whiten),
-                            "r2_train": r2_train,
-                            "r2_eval": r2_eval,
-                        })
-    print(f"Skipped {skipped} nodes below the minimum-sample threshold.")
+    all_nodes = [(target, node) for target, nodes in target_nodes.items() for node in nodes]
+    log.info("Evaluating %d nodes (whiten=%s); logging every %d nodes.",
+             len(all_nodes), whiten, _LOG_EVERY)
+    start = time.monotonic()
+    for i, (target, node) in enumerate(all_nodes, 1):
+        rows = np.flatnonzero(np.isin(sample_classes, node.class_indices))
+        if rows.size < n_fit + n_eval:
+            skipped += 1
+            continue
+        shuffled = rng.permutation(rows)
+        fit_idx, eval_idx = shuffled[:n_fit], shuffled[n_fit : n_fit + n_eval]
+        # Fit/apply whitening once per model per node (it depends only on the
+        # model's own fit split), not redundantly inside every ordered pair.
+        fit_emb = {m.spec.name: embeddings[m.spec.name][fit_idx] for m in models}
+        eval_emb = {m.spec.name: embeddings[m.spec.name][eval_idx] for m in models}
+        if whiten:
+            for name in list(fit_emb):
+                w = fit_whitening(fit_emb[name])
+                fit_emb[name], eval_emb[name] = w.apply(fit_emb[name]), w.apply(eval_emb[name])
+        for src in models:
+            for tgt in models:
+                if src.spec.name == tgt.spec.name:
+                    continue
+                xs_tr, ys_tr = fit_emb[src.spec.name], fit_emb[tgt.spec.name]
+                xs_ev, ys_ev = eval_emb[src.spec.name], eval_emb[tgt.spec.name]
+                for kind in cfg.transforms:
+                    r2_train, r2_eval = evaluate_transform(kind, xs_tr, ys_tr, xs_ev, ys_ev)
+                    records.append({
+                        "target": target,
+                        "node": node.key,
+                        "node_label": node.label,
+                        "relation": node.relation,
+                        "grouping": node.grouping,
+                        "depth": node.depth,
+                        "n_classes": len(node.class_indices),
+                        "n_train": n_fit,
+                        "n_eval": n_eval,
+                        "source": src.spec.name,
+                        "target_model": tgt.spec.name,
+                        "transform": kind,
+                        "whiten": bool(whiten),
+                        "r2_train": r2_train,
+                        "r2_eval": r2_eval,
+                    })
+        if i % _LOG_EVERY == 0 or i == len(all_nodes):
+            elapsed = time.monotonic() - start
+            log.info("  %d/%d nodes (%d evaluated, %d skipped, %d rows, %.0fs elapsed).",
+                     i, len(all_nodes), i - skipped, skipped, len(records), elapsed)
+    log.info("Skipped %d nodes below the minimum-sample threshold; %d rows total.",
+             skipped, len(records))
     return records

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +22,8 @@ from jaxtyping import Float, Int
 from tqdm import tqdm
 
 from repsim.models import LoadedModel
+
+log = logging.getLogger(__name__)
 
 Embeddings = dict[str, Float[np.ndarray, "n d"]]
 
@@ -106,11 +109,18 @@ def extract_embeddings(
         for m in models
     }
     if all(p.exists() for p in paths.values()):
+        log.info("Loading cached embeddings for %d models from %s.", len(paths), cache_dir)
         return {name: np.load(p) for name, p in paths.items()}
 
+    log.info(
+        "Cache miss: embedding %d images for %d models (%s). This is the slow path.",
+        len(index.rows), len(models), ", ".join(p.name for p in paths.values() if not p.exists()),
+    )
     rows = index.rows.tolist()
     chunks: dict[str, list[np.ndarray]] = {m.spec.name: [] for m in models}
-    for start in tqdm(range(0, len(rows), batch_size), desc=f"embed/{split}"):
+    # mininterval=10: in a file (no TTY) tqdm writes one line per update, so cap
+    # updates to every ~10s rather than flooding the SLURM log with thousands.
+    for start in tqdm(range(0, len(rows), batch_size), desc=f"embed/{split}", mininterval=10.0):
         images = [img.convert("RGB") for img in dataset[rows[start : start + batch_size]]["image"]]
         for model in models:
             tensors = torch.stack([model.preprocess(img) for img in images])
@@ -119,4 +129,5 @@ def extract_embeddings(
     embeddings = {name: np.concatenate(parts, axis=0) for name, parts in chunks.items()}
     for name, matrix in embeddings.items():
         np.save(paths[name], matrix)
+    log.info("Embedded and cached %d images for %d models.", len(index.rows), len(models))
     return embeddings

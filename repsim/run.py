@@ -9,12 +9,14 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
 from repsim.experiment import run_experiment
+from repsim.log import setup_logging
 from repsim.plots import plot_all
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="hierarchically_local_similarity")
 def main(cfg: DictConfig) -> None:
     """Run the experiment named by ``--config-name`` (default: this experiment)."""
+    setup_logging()
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     run_experiment(cfg, output_dir=out_dir)
     plot_all(out_dir / "results.csv")
