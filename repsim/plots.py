@@ -18,6 +18,46 @@ import seaborn as sns
 
 _RELATION_ORDER = ["descendant", "self", "ancestor"]
 
+# Nature-style rcParams: Helvetica-like sans (Nimbus Sans), thin spines, no top/
+# right frame, restrained type sizes, gridlines drawn per-axes (off by default).
+_NATURE_RC = {
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Nimbus Sans", "Arial", "Helvetica", "DejaVu Sans"],
+    "font.size": 9,
+    "axes.titlesize": 9,
+    "axes.titleweight": "regular",
+    "axes.labelsize": 9,
+    "axes.linewidth": 0.8,
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.grid": False,
+    "axes.axisbelow": True,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "xtick.major.width": 0.8,
+    "ytick.major.width": 0.8,
+    "xtick.major.size": 3,
+    "ytick.major.size": 3,
+    "legend.frameon": False,
+    "legend.fontsize": 8,
+    "figure.dpi": 150,
+    "savefig.dpi": 300,
+    "savefig.bbox": "tight",
+}
+
+# Okabe-Ito colourblind-safe qualitative palette (drops hard-to-read yellow).
+_OKABE_ITO = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000"]
+
+
+def _pair_label(df: pd.DataFrame) -> pd.Series:
+    """Directional model-pair label ``source -> target_model`` (e.g. dinov2 → mae)."""
+    return df["source"] + " → " + df["target_model"]
+
+
+def _light_grid(ax: plt.Axes, axis: str = "y") -> None:
+    """Apply a faint background gridline on one axis, Nature-style."""
+    ax.grid(axis=axis, color="0.92", linewidth=0.6, zorder=0)
+
 
 def _binned_trend(
     sub: pd.DataFrame, n_bins: int = 8
@@ -41,30 +81,47 @@ def _binned_trend(
 
 
 def plot_r2_vs_granularity(results: pd.DataFrame, out_dir: Path) -> Path:
-    """Held-out R^2 vs node breadth for the hierarchical nodes (linear).
+    """Held-out R^2 vs granularity, one trendline per directional model pair.
 
-    Each target contributes one faint line through its descendant -> self ->
-    ancestor chain (ordered by breadth); a bold binned-mean trend aggregates
-    across all targets and model pairs. Tests the core claim: alignment degrades
-    as the region of the hierarchy broadens (coarsens).
+    Each ordered model pair (source -> target_model) gets its own colour: the
+    scatter shows every hierarchical node (with horizontal jitter so coincident
+    breadths separate) and a least-squares trendline fit in log2(breadth) space.
+    Tests the core claim per pair: alignment degrades as the region of the
+    hierarchy broadens (coarsens). The random null is excluded.
     """
-    hier = results[(results["grouping"] == "hierarchical") & (results["transform"] == "linear")]
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for _, chain in hier.groupby("target"):
-        line = chain.groupby("n_classes")["r2_eval"].mean().sort_index()
-        ax.plot(line.index, line.values, color="0.7", lw=0.7, alpha=0.5, zorder=1)
-    centres, means, ses = _binned_trend(hier)
-    ax.errorbar(centres, means, yerr=ses, color="C3", lw=2.5, marker="o",
-                capsize=3, zorder=3, label="binned mean +/- SE")
-    ax.set_xscale("log", base=2)
-    ax.set_xlabel("node breadth: #ImageNet classes (log scale; finer $\\to$ coarser)")
-    ax.set_ylabel("held-out $R^2$")
-    ax.set_title("Cross-model alignment vs hierarchy granularity")
-    ax.legend()
-    fig.tight_layout()
-    path = out_dir / "r2_vs_granularity.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
+    hier = results[
+        (results["grouping"] == "hierarchical") & (results["transform"] == "linear")
+    ].copy()
+    hier["pair"] = _pair_label(hier)
+    pairs = sorted(hier["pair"].unique())
+    palette = {p: _OKABE_ITO[i % len(_OKABE_ITO)] for i, p in enumerate(pairs)}
+    rng = np.random.default_rng(0)
+
+    with plt.rc_context(_NATURE_RC):
+        fig, ax = plt.subplots(figsize=(5.2, 3.6))
+        log_all = np.log2(hier["n_classes"].to_numpy())
+        xgrid = np.linspace(log_all.min(), log_all.max(), 100)
+        for pair in pairs:
+            sub = hier[hier["pair"] == pair]
+            x = np.log2(sub["n_classes"].to_numpy())
+            y = sub["r2_eval"].to_numpy()
+            jitter = rng.uniform(-0.13, 0.13, size=x.size)  # multiplicative on log2 axis
+            ax.scatter(2 ** (x + jitter), y, s=9, color=palette[pair],
+                       alpha=0.30, linewidths=0, zorder=2)
+            if x.size >= 2 and np.ptp(x) > 0:
+                slope, intercept = np.polyfit(x, y, 1)
+                ax.plot(2 ** xgrid, slope * xgrid + intercept, color=palette[pair],
+                        lw=1.8, solid_capstyle="round", zorder=3, label=pair)
+        ax.set_xscale("log", base=2)
+        _light_grid(ax, "y")
+        ax.set_xlabel("Granularity — no. of ImageNet classes (finer → coarser)")
+        ax.set_ylabel("Alignment ($R^2$, held-out)")
+        ax.set_title("Cross-model alignment vs hierarchy granularity")
+        ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
+                  title="Model pair", title_fontsize=8, handlelength=1.3)
+        path = out_dir / "r2_vs_granularity.png"
+        fig.savefig(path)
+        plt.close(fig)
     return path
 
 
@@ -99,33 +156,54 @@ def plot_real_vs_null(results: pd.DataFrame, out_dir: Path) -> Path:
 
 
 def plot_overfitting(results: pd.DataFrame, out_dir: Path) -> Path:
-    """Scatter in-sample vs held-out R^2 for the hierarchical nodes.
+    """Per-model-pair scatter of in-sample vs held-out R^2 (linear, hierarchical).
 
-    Points are sized by ``n_classes`` (node breadth, since fit-set size is fixed)
-    and coloured by relation. Points far below the diagonal indicate overfitting
-    (high in-sample, low held-out).
+    One panel per directional model pair (source -> target_model); points are
+    coloured by node breadth on a log scale (shared colourbar). Points far below
+    the dashed identity line indicate overfitting (high in-sample, low held-out),
+    which the colour reveals concentrates at the finest, narrowest nodes.
     """
-    hier = results[results["grouping"] == "hierarchical"]
-    kinds = [k for k in ["linear", "rigid"] if k in hier["transform"].unique()]
-    fig, axes = plt.subplots(1, len(kinds), figsize=(5.5 * len(kinds), 5),
-                             sharex=True, sharey=True, squeeze=False)
-    for ax, kind in zip(axes[0], kinds):
-        sub = hier[hier["transform"] == kind]
-        sns.scatterplot(
-            data=sub, x="r2_train", y="r2_eval", hue="relation",
-            hue_order=_RELATION_ORDER, size="n_classes", sizes=(15, 200),
-            alpha=0.6, ax=ax, legend=(kind == kinds[-1]),
-        )
-        lims = [min(sub["r2_eval"].min(), 0), 1]
-        ax.plot(lims, lims, "k--", lw=1, alpha=0.5)
-        ax.set_title(f"{kind} transform")
-        ax.set_xlabel("in-sample $R^2$ (fit split)")
-        ax.set_ylabel("held-out $R^2$")
-    fig.suptitle("Overfitting: in-sample vs held-out alignment $R^2$")
-    fig.tight_layout()
-    path = out_dir / "overfitting.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
+    hier = results[
+        (results["grouping"] == "hierarchical") & (results["transform"] == "linear")
+    ].copy()
+    hier["pair"] = _pair_label(hier)
+    pairs = sorted(hier["pair"].unique())
+    log_b = np.log2(hier["n_classes"].to_numpy())
+    norm = plt.Normalize(log_b.min(), log_b.max())
+
+    ncol = 3
+    nrow = -(-len(pairs) // ncol)
+    with plt.rc_context(_NATURE_RC):
+        fig, axes = plt.subplots(nrow, ncol, figsize=(2.55 * ncol, 2.55 * nrow),
+                                 sharex=True, sharey=True, squeeze=False)
+        lo = min(hier["r2_train"].min(), hier["r2_eval"].min(), 0.0)
+        lims = [lo, 1.0]
+        sc = None
+        for ax, pair in zip(axes.flat, pairs):
+            sub = hier[hier["pair"] == pair]
+            ax.plot(lims, lims, ls="--", color="0.6", lw=0.8, zorder=1)
+            sc = ax.scatter(sub["r2_train"], sub["r2_eval"],
+                            c=np.log2(sub["n_classes"]), cmap="viridis", norm=norm,
+                            s=14, alpha=0.85, linewidths=0, zorder=2)
+            ax.set_title(pair)
+            ax.set_xlim(lims)
+            ax.set_ylim(lims)
+            ax.set_aspect("equal")
+        for ax in axes.flat[len(pairs):]:
+            ax.set_visible(False)
+
+        fig.supxlabel("In-sample $R^2$ (fit split)", fontsize=9)
+        fig.supylabel("Held-out $R^2$", fontsize=9)
+        fig.suptitle("Overfitting by model pair: in-sample vs held-out $R^2$",
+                     fontsize=10)
+        ticks = list(range(int(np.ceil(log_b.min())), int(np.floor(log_b.max())) + 1))
+        cbar = fig.colorbar(sc, ax=axes, fraction=0.025, pad=0.02, ticks=ticks)
+        cbar.set_label("Granularity (no. classes)", fontsize=8)
+        cbar.ax.set_yticklabels([2 ** t for t in ticks])
+        cbar.ax.tick_params(labelsize=7)
+        path = out_dir / "overfitting.png"
+        fig.savefig(path)
+        plt.close(fig)
     return path
 
 

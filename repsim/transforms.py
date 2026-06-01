@@ -34,6 +34,40 @@ def r2_score(
 
 
 @dataclass(frozen=True)
+class Whitening:
+    """A PCA-whitening map ``x -> (x - mean) @ transform``.
+
+    Centres the data and rotates it into its PCA basis with each component scaled
+    to unit variance, so the whitened representation has (approximately) zero mean
+    and identity covariance.
+    """
+
+    mean: Float[np.ndarray, "d"]
+    transform: Float[np.ndarray, "d d"]
+
+    def apply(self, x: Float[np.ndarray, "n d"]) -> Float[np.ndarray, "n d"]:
+        """Whiten a batch of representations."""
+        return (x - self.mean) @ self.transform
+
+
+def fit_whitening(
+    x: Float[np.ndarray, "n d"], eps: float = 1e-3
+) -> Whitening:
+    """Fit PCA whitening on ``x``.
+
+    Each principal component is scaled to unit variance. ``eps`` floors the
+    per-component variance *relative to the largest component* before inverting it,
+    so near-degenerate directions (e.g. MAE's tiny-variance dims) are not blown up
+    into amplified noise.
+    """
+    mean = x.mean(axis=0)
+    _, singular, vt = np.linalg.svd(x - mean, full_matrices=False)
+    variance = singular**2 / x.shape[0]
+    scale = 1.0 / np.sqrt(variance + eps * variance.max())
+    return Whitening(mean=mean, transform=vt.T * scale)
+
+
+@dataclass(frozen=True)
 class LinearTransform:
     """An affine map ``x -> x @ weight + bias``."""
 

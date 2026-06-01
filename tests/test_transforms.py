@@ -7,6 +7,7 @@ from repsim.transforms import (
     evaluate_transform,
     fit_linear,
     fit_rigid,
+    fit_whitening,
     r2_score,
 )
 
@@ -69,6 +70,28 @@ def test_evaluate_transform_returns_train_and_eval_r2():
     # A noiseless affine relation generalises perfectly on both splits.
     assert r2_train == pytest.approx(1.0, abs=1e-8)
     assert r2_eval == pytest.approx(1.0, abs=1e-8)
+
+
+def test_whitening_yields_zero_mean_identity_covariance():
+    rng = np.random.default_rng(5)
+    # Correlated, anisotropic data: a random linear mix of standard normals.
+    base = rng.normal(size=(500, 4))
+    mixed = base @ rng.normal(size=(4, 4)) + np.array([10.0, -3.0, 7.0, 0.0])
+
+    whitened = fit_whitening(mixed, eps=0.0).apply(mixed)
+    assert np.allclose(whitened.mean(axis=0), 0.0, atol=1e-8)
+    cov = np.cov(whitened, rowvar=False, bias=True)  # bias=True: ÷n, as fit_whitening uses
+    assert np.allclose(cov, np.eye(4), atol=1e-6)
+
+
+def test_whitening_floors_degenerate_directions():
+    rng = np.random.default_rng(6)
+    # Last column is (near-)constant: zero variance that naive whitening blows up.
+    x = rng.normal(size=(200, 3))
+    x = np.hstack([x, np.full((200, 1), 2.0)])
+
+    whitened = fit_whitening(x).apply(x)
+    assert np.isfinite(whitened).all()
 
 
 def test_evaluate_transform_unknown_kind():

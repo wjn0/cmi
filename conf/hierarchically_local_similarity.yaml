@@ -42,6 +42,11 @@
 # nodes -- where the validation split's ~50 images/class is too thin -- get a
 # large, balanced held-out set.
 #
+# If `whiten` is set, each model's embeddings are PCA-whitened per node (centred,
+# decorrelated, unit variance) with the whitening fit on the fit split and applied
+# to both splits, so R^2 is measured in the target's whitened space where every
+# dimension contributes equally to SS_tot.
+#
 # Output: results.csv, one row per (target, node, ordered model pair, transform).
 # ============================================================================
 
@@ -87,6 +92,11 @@ dataset:
 transforms: [linear]         # add `rigid` (PCA + similarity Procrustes) to also fit
                              # the orthogonal-map+translation+scale transform; its
                              # per-node PCA/SVD fits are markedly slower than linear.
+whiten: false                # PCA-whiten each model's embeddings per node (centre,
+                             # decorrelate, unit variance) with whitening fit on the
+                             # fit split. R^2 is then measured in the target's whitened
+                             # space, so each dimension weighs equally in SS_tot rather
+                             # than high-variance directions dominating.
 
 # Runtime ------------------------------------------------------------------
 batch_size: 64

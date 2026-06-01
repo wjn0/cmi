@@ -37,7 +37,7 @@ from repsim.imagenet_hierarchy import (
 )
 from repsim.inference import Embeddings, build_sample_index, extract_embeddings
 from repsim.models import LoadedModel, ModelSpec
-from repsim.transforms import evaluate_transform
+from repsim.transforms import evaluate_transform, fit_whitening
 
 _NULL_KEY = "__random__"
 
@@ -149,8 +149,15 @@ def _evaluate(
     transforms at that node), so the fit-set size is constant -- removing the
     sample-size confound when comparing R^2 across nodes of differing breadth.
     Nodes that cannot supply both counts are skipped.
+
+    When ``cfg.whiten`` is set, each model's embeddings are PCA-whitened per node
+    (mean-centred, decorrelated, scaled to unit variance) with the whitening fitted
+    on that node's fit split and applied to both splits. R^2 is then measured in the
+    target's whitened space, where every dimension contributes equally to SS_tot
+    rather than high-variance directions dominating.
     """
     n_fit, n_eval = cfg.n_fit_samples, cfg.n_eval_samples
+    whiten = cfg.get("whiten", False)
     rng = np.random.default_rng(cfg.seed)
     records: list[dict] = []
     skipped = 0
@@ -168,6 +175,10 @@ def _evaluate(
                         continue
                     xs_tr, ys_tr = embeddings[src.spec.name][fit_idx], embeddings[tgt.spec.name][fit_idx]
                     xs_ev, ys_ev = embeddings[src.spec.name][eval_idx], embeddings[tgt.spec.name][eval_idx]
+                    if whiten:
+                        wx, wy = fit_whitening(xs_tr), fit_whitening(ys_tr)
+                        xs_tr, ys_tr = wx.apply(xs_tr), wy.apply(ys_tr)
+                        xs_ev, ys_ev = wx.apply(xs_ev), wy.apply(ys_ev)
                     for kind in cfg.transforms:
                         r2_train, r2_eval = evaluate_transform(kind, xs_tr, ys_tr, xs_ev, ys_ev)
                         records.append({
@@ -183,6 +194,7 @@ def _evaluate(
                             "source": src.spec.name,
                             "target_model": tgt.spec.name,
                             "transform": kind,
+                            "whiten": bool(whiten),
                             "r2_train": r2_train,
                             "r2_eval": r2_eval,
                         })
