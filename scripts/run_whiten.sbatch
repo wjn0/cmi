@@ -8,6 +8,8 @@
 
 # Re-evaluate the hierarchically_local_similarity experiment with PCA whitening,
 # on CPU, reusing the cached full-pool embeddings (verified by scripts/cache_check.py).
+# whiten=true + the linear transform is linear CKA; rbf_cka is dropped here because
+# it double-centres its Gram and so requires whiten=false (hence transforms=[linear]).
 # PYTHONUNBUFFERED keeps any non-logging stdout (and tqdm on stderr) flushing live.
 export PYTHONUNBUFFERED=1
 # Dataset + embeddings are fully cached; skip HF network round-trips (faster start, quieter log).
@@ -15,4 +17,4 @@ export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
 cd "$SLURM_SUBMIT_DIR"
-srun uv run python -m repsim.run whiten=true device=cpu
+srun uv run python -m repsim.run transforms=[linear] whiten=true device=cpu

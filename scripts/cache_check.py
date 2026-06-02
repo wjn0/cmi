@@ -18,7 +18,7 @@ from repsim.log import setup_logging
 
 setup_logging()
 log = logging.getLogger("cache_check")
-cfg = OmegaConf.load("conf/hierarchically_local_similarity.yaml")
+cfg = OmegaConf.load("conf/config.yaml")  # shared base holds the sampling config
 per_class_limit = cfg.per_class_limit or 768
 log.info("Loading labels for %s split=%s ...", cfg.dataset.hf_id, cfg.dataset.split)
 ds = load_dataset(cfg.dataset.hf_id)[cfg.dataset.split]

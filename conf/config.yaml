@@ -1,0 +1,75 @@
+# ============================================================================
+# Shared base config for the representation-similarity experiments.
+# ============================================================================
+# Two experiments share this whole design (target sampling, hierarchy chains,
+# null controls, fixed per-node fit/held-out splits) and differ only in their
+# model set and a couple of fit sizes. Each is a member of the `experiment`
+# config group (conf/experiment/*.yaml, `# @package _global_`):
+#
+#   uv run python -m repsim.run experiment=hierarchically_local_similarity
+#   uv run python -m repsim.run experiment=dinov2_scale_similarity
+#
+# Sweep BOTH experiments in one launch (Hydra multirun):
+#
+#   uv run python -m repsim.run -m \
+#     experiment=hierarchically_local_similarity,dinov2_scale_similarity
+#
+# Every run computes BOTH similarities in a single pass over the cached
+# embeddings -- see `transforms` below. The per-experiment scientific
+# descriptions live in the experiment files.
+# ============================================================================
+
+defaults:
+  - _self_
+  - experiment: hierarchically_local_similarity
+
+seed: 0
+
+# Targets ------------------------------------------------------------------
+target_nodes: [feline]       # explicit starting nodes (WordNet lemma or synset)
+n_random_targets: 75         # additional randomly sampled starting nodes
+random_target_max_classes: 40 # max ImageNet leaf classes in a sampled target's subtree
+# random_target_min_classes is experiment-specific (it depends on n_fit_samples).
+
+# Hierarchy ----------------------------------------------------------------
+max_ancestor_levels: 4       # ancestor (coarser) levels above each target
+max_descendant_levels: 3     # descendant (finer) levels below each target
+null_replicates: 4           # random size-matched null nodes per distinct breadth
+
+# Sampling & data sufficiency ----------------------------------------------
+# Held-out is a disjoint random split of each node's own images, so a node needs
+# n_fit_samples + n_eval_samples images. n_fit_samples is experiment-specific
+# (it scales with the largest model dim; see each experiment file).
+per_class_limit: 1000        # images per class drawn from the pool
+n_eval_samples: 250          # fixed held-out images per node for held-out R^2.
+
+# Dataset ------------------------------------------------------------------
+dataset:
+  hf_id: benjamin-paine/imagenet-1k-256x256
+  split: train               # single split; held-out is carved from each node
+
+# Transforms & evaluation --------------------------------------------------
+# Both similarities are computed in one pass, so every results.csv carries the
+# linear and RBF-CKA rows for the same per-node splits (directly comparable):
+#   - linear : affine least squares  min_{W,b} || f_i W + b - f_j ||_F,
+#              R^2 = 1 - SS_res/SS_tot, in-sample and held-out.
+#   - rbf_cka: nonlinear centred kernel alignment, Gaussian kernel (median
+#              bandwidth), a non-fitted symmetric [0,1] similarity.
+# rbf_cka double-centres its Gram matrix, so it REQUIRES raw (un-whitened)
+# embeddings -- the two run together only at whiten=false (enforced in code).
+# Add `rigid` for the PCA + similarity-Procrustes transform.
+transforms: [linear, rbf_cka]
+whiten: false                # PCA-whiten each model's embeddings per node (fit on
+                             # the fit split). whiten=true + linear == linear CKA,
+                             # but whiten=true is INCOMPATIBLE with rbf_cka, so to
+                             # measure linear CKA drop rbf_cka first, e.g.
+                             #   transforms=[linear] whiten=true.
+
+# Runtime ------------------------------------------------------------------
+device: cuda                 # fails loudly if CUDA is unavailable
+cache_dir: ./outputs/embeddings
+# batch_size and num_workers are experiment-specific (model size / decode load).
+
+hydra:
+  job:
+    chdir: false             # keep cwd at project root so cache_dir stays stable

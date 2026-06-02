@@ -1,0 +1,57 @@
+# @package _global_
+# ============================================================================
+# Experiment: dinov2_scale_similarity
+# ============================================================================
+# Question: how well can ONE DINOv2 scale's representation be mapped onto
+# ANOTHER scale's, and how does that cross-scale alignment depend on the
+# *granularity* (breadth) of the region of the ImageNet/WordNet label hierarchy
+# we measure it over? This is the `hierarchically_local_similarity` design with
+# the three heterogeneous models (DINOv2/SigLIP/MAE) replaced by the four DINOv2
+# scales -- small (d=384), base (768), large (1024), giant (1536) -- all trained
+# the same way and differing only in capacity. Each ordered scale pair S_i->S_j
+# is its own R^2-vs-granularity trendline; comparing them shows whether the
+# hierarchically-local effect persists within a single model family and how it
+# tracks the size gap between scales.
+#
+# The procedure (target sampling, hierarchy chains, null controls, fixed per-node
+# fit/held-out splits) and the two similarities (linear affine least squares +
+# non-fitted RBF CKA, computed in one pass) are identical to
+# hierarchically_local_similarity -- see that experiment file and conf/config.yaml
+# for the full rationale. Only the model set and fit size differ.
+#
+# Because the four scales have different d_model (384..1536), a single global
+# `n_fit_samples` is used (rather than per-pair 5xd) so every scale pair is fit
+# and scored on the SAME images at every node -- the only thing that differs
+# between pairs is the representations, making the trendlines directly
+# comparable. n_fit must exceed the largest dim (1536); 5x giant = 7680
+# generalizes (see hierarchically_local_similarity notes on overfitting). At
+# per_class_limit=1000 a node then needs >= 8 leaf classes (8 x ~1000 > 7930),
+# so the finest evaluated nodes have breadth ~8.
+#
+# Images are decoded once and fed to all four scales (decode, not the forward
+# pass, is the bottleneck). Output: results.csv, one row per (target, node,
+# ordered scale pair, transform).
+# ============================================================================
+
+# Targets ------------------------------------------------------------------
+random_target_min_classes: 8 # min leaf classes -- >= breadth floor so the target
+                             # node itself is evaluable at n_fit_samples=7680.
+
+# Sampling & data sufficiency ----------------------------------------------
+n_fit_samples: 7680          # fixed fit images per node (= 5 x d_model=1536, giant).
+                             # Single global size so all scale pairs fit on the same
+                             # images; must exceed the largest model dim (1536).
+
+# Models -------------------------------------------------------------------
+# The four DINOv2 scales, all transformers CLS-pooler embeddings.
+models:
+  - {name: dinov2_s, backend: transformers, hf_id: facebook/dinov2-small,  pooling: pooler}
+  - {name: dinov2_b, backend: transformers, hf_id: facebook/dinov2-base,   pooling: pooler}
+  - {name: dinov2_l, backend: transformers, hf_id: facebook/dinov2-large,  pooling: pooler}
+  - {name: dinov2_g, backend: transformers, hf_id: facebook/dinov2-giant,  pooling: pooler}
+
+# Runtime ------------------------------------------------------------------
+batch_size: 256              # bf16 inference (CUDA) frees memory; larger batch
+                             # cuts per-batch overhead. The GPU is compute-bound.
+num_workers: 16              # DataLoader workers for parallel decode/preprocess;
+                             # match the job's --cpus-per-task.

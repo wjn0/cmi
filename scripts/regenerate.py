@@ -21,7 +21,13 @@ from repsim.imagenet_hierarchy import all_class_indices
 from repsim.inference import _cache_key, build_sample_index
 from repsim.plots import plot_all
 
-cfg = OmegaConf.load("conf/hierarchically_local_similarity.yaml")
+# Compose the same config Hydra would: shared base + one experiment's overrides.
+# Edit EXPERIMENT to regenerate the dinov2_scale_similarity run instead.
+EXPERIMENT = "hierarchically_local_similarity"
+cfg = OmegaConf.merge(
+    OmegaConf.load("conf/config.yaml"),
+    OmegaConf.load(f"conf/experiment/{EXPERIMENT}.yaml"),
+)
 names = [m.name for m in cfg.models]
 
 print("loading labels...", flush=True)

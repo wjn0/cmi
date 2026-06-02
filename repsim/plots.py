@@ -54,9 +54,57 @@ def _pair_label(df: pd.DataFrame) -> pd.Series:
     return df["source"] + " → " + df["target_model"]
 
 
+def _primary_transform(results: pd.DataFrame) -> str:
+    """The transform to visualise: ``linear`` if present, else the first available.
+
+    The figures show one fitted/similarity score per node; with several transforms
+    present we plot ``linear`` (the default analysis), and otherwise fall back to
+    whatever single transform was run (e.g. ``rbf_cka``).
+    """
+    kinds = set(results["transform"].unique())
+    return "linear" if "linear" in kinds else sorted(kinds)[0]
+
+
+def _metric_label(transform: str) -> str:
+    """Axis label for the score column, which holds CKA for ``rbf_cka`` else R^2."""
+    return "RBF CKA" if transform == "rbf_cka" else "$R^2$"
+
+
 def _light_grid(ax: plt.Axes, axis: str = "y") -> None:
     """Apply a faint background gridline on one axis, Nature-style."""
     ax.grid(axis=axis, color="0.92", linewidth=0.6, zorder=0)
+
+
+def _annotate_example_nodes(
+    ax: plt.Axes, sub: pd.DataFrame, xcol: str, ycol: str, n: int = 3
+) -> None:
+    """Label ``n`` hierarchical nodes with their synset name to anchor intuition.
+
+    Splits the points into ``n`` equal-count bins along ``log2(xcol)`` (breadth)
+    and, in each bin, labels the single node whose ``ycol`` deviates most from the
+    overall mean. The labelled points are therefore y-axis outliers spread across
+    granularity scales (fine → coarse), illustrating what the breadth axis means.
+    Random null nodes are excluded -- only real synsets carry interpretable names.
+    """
+    real = sub[sub["grouping"] == "hierarchical"].dropna(subset=[ycol, xcol])
+    if real.empty:
+        return
+    logx = np.log2(real[xcol].to_numpy())
+    edges = np.quantile(logx, np.linspace(0, 1, n + 1))
+    edges[-1] += 1e-9  # include the widest node in the last bin
+    which = np.clip(np.digitize(logx, edges) - 1, 0, n - 1)
+    ymean = real[ycol].to_numpy().mean()
+    for b in range(n):
+        bin_rows = real[which == b]
+        if bin_rows.empty:
+            continue
+        pick = bin_rows.iloc[(bin_rows[ycol] - ymean).abs().to_numpy().argmax()]
+        ax.annotate(
+            pick["node_label"], (pick[xcol], pick[ycol]),
+            xytext=(0, 9 if b % 2 == 0 else -12), textcoords="offset points",
+            fontsize=6.5, ha="center", color="0.15", zorder=5,
+            arrowprops=dict(arrowstyle="-", lw=0.5, color="0.45"),
+        )
 
 
 def _binned_trend(
@@ -89,8 +137,9 @@ def plot_r2_vs_granularity(results: pd.DataFrame, out_dir: Path) -> Path:
     Tests the core claim per pair: alignment degrades as the region of the
     hierarchy broadens (coarsens). The random null is excluded.
     """
+    transform = _primary_transform(results)
     hier = results[
-        (results["grouping"] == "hierarchical") & (results["transform"] == "linear")
+        (results["grouping"] == "hierarchical") & (results["transform"] == transform)
     ].copy()
     hier["pair"] = _pair_label(hier)
     pairs = sorted(hier["pair"].unique())
@@ -112,10 +161,11 @@ def plot_r2_vs_granularity(results: pd.DataFrame, out_dir: Path) -> Path:
                 slope, intercept = np.polyfit(x, y, 1)
                 ax.plot(2 ** xgrid, slope * xgrid + intercept, color=palette[pair],
                         lw=1.8, solid_capstyle="round", zorder=3, label=pair)
+        _annotate_example_nodes(ax, hier, "n_classes", "r2_eval")
         ax.set_xscale("log", base=2)
         _light_grid(ax, "y")
         ax.set_xlabel("Granularity — no. of ImageNet classes (finer → coarser)")
-        ax.set_ylabel("Alignment ($R^2$, held-out)")
+        ax.set_ylabel(f"Alignment ({_metric_label(transform)}, held-out)")
         ax.set_title("Cross-model alignment vs hierarchy granularity")
         ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5),
                   title="Model pair", title_fontsize=8, handlelength=1.3)
@@ -133,19 +183,21 @@ def plot_real_vs_null(results: pd.DataFrame, out_dir: Path) -> Path:
     practice the two trends overlap -- alignment tracks breadth (class count),
     not semantic coherence.
     """
-    linear = results[results["transform"] == "linear"]
+    transform = _primary_transform(results)
+    chosen = results[results["transform"] == transform]
     fig, ax = plt.subplots(figsize=(8, 5))
     colors = {"hierarchical": "C0", "random": "C1"}
     labels = {"hierarchical": "hierarchical subtree", "random": "random class set"}
-    for grouping, sub in linear.groupby("grouping"):
+    for grouping, sub in chosen.groupby("grouping"):
         ax.scatter(sub["n_classes"], sub["r2_eval"], s=8, alpha=0.15,
                    color=colors.get(grouping, "0.5"))
         centres, means, ses = _binned_trend(sub)
         ax.errorbar(centres, means, yerr=ses, lw=2.5, marker="o", capsize=3,
                     color=colors.get(grouping, "0.5"), label=labels.get(grouping, grouping))
+    _annotate_example_nodes(ax, chosen, "n_classes", "r2_eval")
     ax.set_xscale("log", base=2)
     ax.set_xlabel("node breadth: #ImageNet classes (log scale)")
-    ax.set_ylabel("held-out $R^2$")
+    ax.set_ylabel(f"held-out {_metric_label(transform)}")
     ax.set_title("Locality control: coherent subtrees vs random class sets")
     ax.legend()
     fig.tight_layout()
@@ -163,8 +215,9 @@ def plot_overfitting(results: pd.DataFrame, out_dir: Path) -> Path:
     the dashed identity line indicate overfitting (high in-sample, low held-out),
     which the colour reveals concentrates at the finest, narrowest nodes.
     """
+    transform = _primary_transform(results)
     hier = results[
-        (results["grouping"] == "hierarchical") & (results["transform"] == "linear")
+        (results["grouping"] == "hierarchical") & (results["transform"] == transform)
     ].copy()
     hier["pair"] = _pair_label(hier)
     pairs = sorted(hier["pair"].unique())
@@ -192,9 +245,10 @@ def plot_overfitting(results: pd.DataFrame, out_dir: Path) -> Path:
         for ax in axes.flat[len(pairs):]:
             ax.set_visible(False)
 
-        fig.supxlabel("In-sample $R^2$ (fit split)", fontsize=9)
-        fig.supylabel("Held-out $R^2$", fontsize=9)
-        fig.suptitle("Overfitting by model pair: in-sample vs held-out $R^2$",
+        metric = _metric_label(transform)
+        fig.supxlabel(f"In-sample {metric} (fit split)", fontsize=9)
+        fig.supylabel(f"Held-out {metric}", fontsize=9)
+        fig.suptitle(f"Overfitting by model pair: in-sample vs held-out {metric}",
                      fontsize=10)
         ticks = list(range(int(np.ceil(log_b.min())), int(np.floor(log_b.max())) + 1))
         cbar = fig.colorbar(sc, ax=axes, fraction=0.025, pad=0.02, ticks=ticks)
@@ -208,14 +262,15 @@ def plot_overfitting(results: pd.DataFrame, out_dir: Path) -> Path:
 
 
 def plot_pair_heatmap(results: pd.DataFrame, out_dir: Path) -> Path:
-    """Heatmap of mean held-out R^2 for each ordered model pair (linear)."""
-    linear = results[(results["transform"] == "linear") & (results["grouping"] == "hierarchical")]
-    grid = linear.pivot_table(
+    """Heatmap of mean held-out score for each ordered model pair."""
+    transform = _primary_transform(results)
+    chosen = results[(results["transform"] == transform) & (results["grouping"] == "hierarchical")]
+    grid = chosen.pivot_table(
         index="source", columns="target_model", values="r2_eval", aggfunc="mean"
     )
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.heatmap(grid, annot=True, fmt=".2f", cmap="viridis", vmin=0, vmax=1, ax=ax)
-    ax.set_title("Mean held-out $R^2$ (linear): source $\\to$ target")
+    ax.set_title(f"Mean held-out {_metric_label(transform)} ({transform}): source $\\to$ target")
     ax.set_xlabel("target model")
     ax.set_ylabel("source model")
     fig.tight_layout()

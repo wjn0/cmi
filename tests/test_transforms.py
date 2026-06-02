@@ -9,6 +9,7 @@ from repsim.transforms import (
     fit_rigid,
     fit_whitening,
     r2_score,
+    rbf_cka,
 )
 
 
@@ -92,6 +93,41 @@ def test_whitening_floors_degenerate_directions():
 
     whitened = fit_whitening(x).apply(x)
     assert np.isfinite(whitened).all()
+
+
+def test_rbf_cka_is_one_for_identical_representations():
+    rng = np.random.default_rng(7)
+    x = rng.normal(size=(150, 6))
+    assert rbf_cka(x, x) == pytest.approx(1.0, abs=1e-10)
+
+
+def test_rbf_cka_invariant_to_orthogonal_transform_and_scale():
+    rng = np.random.default_rng(8)
+    x = rng.normal(size=(150, 5))
+    rotation, _ = np.linalg.qr(rng.normal(size=(5, 5)))
+    y = 3.0 * (x @ rotation)  # isotropic scale + rotation leave RBF CKA unchanged
+    assert rbf_cka(x, y) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_rbf_cka_is_symmetric_and_low_for_independent_data():
+    rng = np.random.default_rng(9)
+    x = rng.normal(size=(200, 4))
+    y = rng.normal(size=(200, 7))
+    assert rbf_cka(x, y) == pytest.approx(rbf_cka(y, x), abs=1e-10)
+    assert rbf_cka(x, y) < 0.1  # independent representations align weakly
+
+
+def test_evaluate_transform_rbf_cka_returns_split_similarities():
+    rng = np.random.default_rng(10)
+    source = rng.normal(size=(120, 5))
+    rotation, _ = np.linalg.qr(rng.normal(size=(5, 5)))
+    target = source @ rotation
+    half = 60
+    cka_train, cka_eval = evaluate_transform(
+        "rbf_cka", source[:half], target[:half], source[half:], target[half:]
+    )
+    assert cka_train == pytest.approx(1.0, abs=1e-6)
+    assert cka_eval == pytest.approx(1.0, abs=1e-6)
 
 
 def test_evaluate_transform_unknown_kind():

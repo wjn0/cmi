@@ -1,3 +1,4 @@
+# @package _global_
 # ============================================================================
 # Experiment: hierarchically_local_similarity
 # ============================================================================
@@ -7,7 +8,7 @@
 # over? Hypothesis: alignment is *hierarchically local* -- finer (narrower)
 # regions align better than coarser (broader) ones.
 #
-# Procedure:
+# Procedure (shared design; see conf/config.yaml for the sweep + transforms):
 #   1. Choose target nodes in the WordNet noun hierarchy: an explicit list plus
 #      `n_random_targets` randomly sampled internal nodes whose subtree holds
 #      between `random_target_min_classes` and `random_target_max_classes` leaf
@@ -16,7 +17,9 @@
 #      range of granularities: `max_descendant_levels` levels of hyponyms below T
 #      (finer), T itself, and `max_ancestor_levels` ancestors above T (coarser).
 #      Each node n carries the ImageNet leaf classes in its subtree; node breadth
-#      |classes(n)| is the continuous granularity axis.
+#      |classes(n)| is the continuous granularity axis. A synset reached by several
+#      targets (broad ancestors especially) is evaluated ONCE, under the first
+#      target that introduces it, so coarse nodes aren't over-weighted.
 #   3. NULL CONTROL: for each distinct breadth k present among the real nodes,
 #      draw `null_replicates` random k-class subsets of the full 1000-class pool.
 #      These match real nodes on class count but carry no semantic coherence, so
@@ -29,52 +32,28 @@
 #      fit images and a disjoint `n_eval_samples` held-out images. The fixed sizes
 #      remove the sample-size confound (R^2 depends on fit-set size, which would
 #      otherwise track breadth). Skip any node that cannot supply both counts.
-#      On the fit split fit transforms T_{i->j} between every ordered model pair:
-#        - linear: affine least squares  min_{W,b} || f_i W + b - f_j ||_F
-#        - rigid : reduce f_i, f_j to k = min(d_i,d_j) PCA dims, then a
-#                  similarity map  z -> s (z R) + t  (orthogonal R, scalar s)
-#                  via Procrustes/Umeyama (reflections allowed).
-#      Report R^2 = 1 - SS_res/SS_tot (pooled over output dims) in-sample (fit
-#      split, to detect overfitting) and on the held-out split.
+#      Then evaluate every ordered model pair under both similarities (linear
+#      affine least squares, and non-fitted RBF CKA) -- see conf/config.yaml.
 #
 # Held-out images are a disjoint random subset of the SAME node's images (same
-# class mix, unseen samples) rather than a separate split, so even breadth-2
-# nodes -- where the validation split's ~50 images/class is too thin -- get a
-# large, balanced held-out set.
-#
-# If `whiten` is set, each model's embeddings are PCA-whitened per node (centred,
-# decorrelated, unit variance) with the whitening fit on the fit split and applied
-# to both splits, so R^2 is measured in the target's whitened space where every
-# dimension contributes equally to SS_tot.
+# class mix, unseen samples), so even breadth-5 nodes get a large balanced
+# held-out set.
 #
 # Output: results.csv, one row per (target, node, ordered model pair, transform).
 # ============================================================================
 
-seed: 0
-
 # Targets ------------------------------------------------------------------
-target_nodes: [feline]       # explicit starting nodes (WordNet lemma or synset)
-n_random_targets: 75         # additional randomly sampled starting nodes
-random_target_min_classes: 5 # min ImageNet leaf classes in a sampled target's subtree
-random_target_max_classes: 40 # max (keeps each target's central granularity moderate)
-
-# Hierarchy ----------------------------------------------------------------
-max_ancestor_levels: 4       # ancestor (coarser) levels above each target
-max_descendant_levels: 3     # descendant (finer) levels below each target
-null_replicates: 4           # random size-matched null nodes per distinct breadth
+random_target_min_classes: 5 # min leaf classes in a sampled target's subtree.
+                             # At n_fit_samples=3840 a node needs >= 5 classes
+                             # (5 x ~1000 > 4090), so the finest nodes have breadth 5.
 
 # Sampling & data sufficiency ----------------------------------------------
-# Held-out is a disjoint random split of each node's own images, so a node needs
-# n_fit_samples + n_eval_samples images. At n_fit=3840 a node needs >= 5 classes
-# (5 x ~1000 > 4090), so the finest evaluated nodes have breadth 5.
 # NOTE: n_fit ~ 2 x d_model (e.g. 1536) makes the affine map badly overfit --
 # held-out R^2 collapses to ~0. n_fit = 5 x d_model (3840) generalizes
 # (held-out R^2 ~ 0.39). To reach breadth-2..4 nodes instead, regularize the fit
 # (ridge, alpha ~ 100 recovers held-out R^2 ~ 0.34 at n_fit=1536).
-per_class_limit: 1000        # images per class drawn from the pool
 n_fit_samples: 3840          # fixed fit images per node (= 5 x d_model=768).
                              # Must exceed d_model or the transform is under-determined.
-n_eval_samples: 250          # fixed held-out images per node for held-out R^2.
 
 # Models -------------------------------------------------------------------
 # pooling: "pooler" (transformers pooler_output) | "head" (timm head) | "avg" (timm mean)
@@ -83,26 +62,6 @@ models:
   - {name: siglip, backend: timm,         hf_id: vit_base_patch16_siglip_224.v2_webli,  pooling: head}
   - {name: mae,    backend: timm,         hf_id: vit_base_patch16_224.mae,              pooling: avg}
 
-# Dataset ------------------------------------------------------------------
-dataset:
-  hf_id: benjamin-paine/imagenet-1k-256x256
-  split: train               # single split; held-out is carved from each node
-
-# Transforms & evaluation --------------------------------------------------
-transforms: [linear]         # add `rigid` (PCA + similarity Procrustes) to also fit
-                             # the orthogonal-map+translation+scale transform; its
-                             # per-node PCA/SVD fits are markedly slower than linear.
-whiten: false                # PCA-whiten each model's embeddings per node (centre,
-                             # decorrelate, unit variance) with whitening fit on the
-                             # fit split. R^2 is then measured in the target's whitened
-                             # space, so each dimension weighs equally in SS_tot rather
-                             # than high-variance directions dominating.
-
 # Runtime ------------------------------------------------------------------
 batch_size: 64
-device: cuda                 # fails loudly if CUDA is unavailable
-cache_dir: ./outputs/embeddings
-
-hydra:
-  job:
-    chdir: false             # keep cwd at project root so cache_dir stays stable
+num_workers: 8               # DataLoader workers for parallel decode/preprocess

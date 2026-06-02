@@ -39,7 +39,7 @@ from repsim.imagenet_hierarchy import (
 )
 from repsim.inference import Embeddings, build_sample_index, extract_embeddings
 from repsim.models import LoadedModel, ModelSpec
-from repsim.transforms import evaluate_transform, fit_whitening
+from repsim.transforms import centered_rbf_gram, cka_from_grams, evaluate_transform, fit_whitening
 
 log = logging.getLogger(__name__)
 
@@ -78,12 +78,21 @@ def _resolve_targets(cfg: DictConfig) -> list[str]:
 
 
 def _build_all_nodes(cfg: DictConfig) -> dict[str, list[HierarchyNode]]:
-    """Build every target's hierarchy chain plus the size-matched null nodes."""
+    """Build every target's hierarchy chain plus the size-matched null nodes.
+
+    A synset is frequently reached by several targets -- broad ancestors such as
+    ``entity.n.01`` especially -- so each synset is kept only under the first
+    target that introduces it. Evaluating the same synset once (rather than
+    redundantly per target) avoids over-weighting coarse nodes in the trends and
+    wasting compute. Null nodes have unique keys and are unaffected.
+    """
     target_nodes: dict[str, list[HierarchyNode]] = {}
+    seen: set[str] = set()
     for target in _resolve_targets(cfg):
-        target_nodes[target] = build_nodes(
-            target, cfg.max_ancestor_levels, cfg.max_descendant_levels
-        )
+        chain = build_nodes(target, cfg.max_ancestor_levels, cfg.max_descendant_levels)
+        fresh = [n for n in chain if n.key not in seen]
+        seen.update(n.key for n in fresh)
+        target_nodes[target] = fresh
     sizes = [len(n.class_indices) for nodes in target_nodes.values() for n in nodes]
     target_nodes[_NULL_KEY] = random_grouping_nodes(
         sizes, cfg.null_replicates, cfg.seed
@@ -95,7 +104,8 @@ def run_experiment(cfg: DictConfig, output_dir: Path | None = None) -> pd.DataFr
     """Run the hierarchically-local similarity experiment and persist results.
 
     Args:
-        cfg: Hydra configuration (see ``conf/hierarchically_local_similarity.yaml``).
+        cfg: Hydra configuration (``conf/config.yaml`` + the selected
+            ``conf/experiment/*.yaml``).
         output_dir: Directory to write ``results.csv`` to (defaults to cwd).
 
     Returns:
@@ -112,6 +122,12 @@ def run_experiment(cfg: DictConfig, output_dir: Path | None = None) -> pd.DataFr
         raise ValueError(
             f"n_fit_samples={cfg.n_fit_samples} must exceed the largest model dim "
             f"({max_dim}), else the linear transform is under-determined."
+        )
+    if cfg.get("whiten", False) and "rbf_cka" in cfg.transforms:
+        raise ValueError(
+            "whiten=true is incompatible with the rbf_cka transform: RBF CKA "
+            "double-centres its kernel, so it must see raw (un-whitened) "
+            "embeddings. Run rbf_cka with whiten=false."
         )
 
     target_nodes = _build_all_nodes(cfg)
@@ -131,6 +147,7 @@ def run_experiment(cfg: DictConfig, output_dir: Path | None = None) -> pd.DataFr
     embeddings = extract_embeddings(
         models, dataset, index, cfg.batch_size,
         cache_dir, cfg.dataset.hf_id, cfg.dataset.split,
+        num_workers=cfg.get("num_workers", 8),
     )
 
     records = _evaluate(cfg, target_nodes, models, embeddings, index.classes)
@@ -163,9 +180,14 @@ def _evaluate(
     on that node's fit split and applied to both splits. R^2 is then measured in the
     target's whitened space, where every dimension contributes equally to SS_tot
     rather than high-variance directions dominating.
+
+    For the ``rbf_cka`` transform each model's centred RBF Gram matrix is built once
+    per node (per split) and reused across every model pair, rather than rebuilt for
+    each ordered pair.
     """
     n_fit, n_eval = cfg.n_fit_samples, cfg.n_eval_samples
     whiten = cfg.get("whiten", False)
+    use_cka = "rbf_cka" in cfg.transforms
     rng = np.random.default_rng(cfg.seed)
     records: list[dict] = []
     skipped = 0
@@ -188,6 +210,9 @@ def _evaluate(
             for name in list(fit_emb):
                 w = fit_whitening(fit_emb[name])
                 fit_emb[name], eval_emb[name] = w.apply(fit_emb[name]), w.apply(eval_emb[name])
+        # Build each model's centred RBF Gram once per node (reused across pairs).
+        gram_fit = {n: centered_rbf_gram(e) for n, e in fit_emb.items()} if use_cka else {}
+        gram_eval = {n: centered_rbf_gram(e) for n, e in eval_emb.items()} if use_cka else {}
         for src in models:
             for tgt in models:
                 if src.spec.name == tgt.spec.name:
@@ -195,7 +220,11 @@ def _evaluate(
                 xs_tr, ys_tr = fit_emb[src.spec.name], fit_emb[tgt.spec.name]
                 xs_ev, ys_ev = eval_emb[src.spec.name], eval_emb[tgt.spec.name]
                 for kind in cfg.transforms:
-                    r2_train, r2_eval = evaluate_transform(kind, xs_tr, ys_tr, xs_ev, ys_ev)
+                    if kind == "rbf_cka":
+                        r2_train = cka_from_grams(gram_fit[src.spec.name], gram_fit[tgt.spec.name])
+                        r2_eval = cka_from_grams(gram_eval[src.spec.name], gram_eval[tgt.spec.name])
+                    else:
+                        r2_train, r2_eval = evaluate_transform(kind, xs_tr, ys_tr, xs_ev, ys_ev)
                     records.append({
                         "target": target,
                         "node": node.key,

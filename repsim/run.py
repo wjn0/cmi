@@ -13,9 +13,14 @@ from repsim.log import setup_logging
 from repsim.plots import plot_all
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="hierarchically_local_similarity")
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
-    """Run the experiment named by ``--config-name`` (default: this experiment)."""
+    """Run the experiment selected by the ``experiment`` config group.
+
+    Defaults to ``experiment=hierarchically_local_similarity``; override with
+    ``experiment=dinov2_scale_similarity`` or sweep both with
+    ``-m experiment=hierarchically_local_similarity,dinov2_scale_similarity``.
+    """
     setup_logging()
     out_dir = Path(HydraConfig.get().runtime.output_dir)
     run_experiment(cfg, output_dir=out_dir)

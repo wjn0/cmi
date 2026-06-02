@@ -9,8 +9,15 @@ fitted on training pairs and scored on held-out pairs:
   dimensions, both representations are first reduced to their common minimum
   dimension by PCA fitted on the training pairs.
 
-Quality is reported as the coefficient of determination R^2, pooled across all
-output dimensions (1 - SS_res / SS_tot).
+For these, quality is reported as the coefficient of determination R^2, pooled
+across all output dimensions (1 - SS_res / SS_tot).
+
+A third option measures similarity directly rather than by fitting a map:
+
+* ``rbf_cka`` -- nonlinear centred kernel alignment (CKA) with a Gaussian (RBF)
+  kernel. CKA is a symmetric [0, 1] similarity, not a fitted transform, so it is
+  reported in the same R^2 column. Because CKA double-centres its Gram matrices,
+  its inputs must NOT be pre-whitened (run with ``whiten=false``).
 """
 
 from __future__ import annotations
@@ -154,6 +161,80 @@ def fit_rigid(
     return RigidTransform(pca_source, pca_target, rotation, scale, translation)
 
 
+def _rbf_gram(x: Float[np.ndarray, "n d"], threshold: float) -> Float[np.ndarray, "n n"]:
+    """RBF Gram matrix with the median-distance bandwidth heuristic.
+
+    The bandwidth is set per representation as ``sigma^2 = threshold^2 * (median
+    pairwise squared distance)``, so the kernel adapts to each representation's
+    scale (matching Kornblith et al., 2019).
+    """
+    dot = x @ x.T
+    sq_norms = np.diag(dot)
+    sq_dist = sq_norms[:, None] + sq_norms[None, :] - 2.0 * dot
+    np.maximum(sq_dist, 0.0, out=sq_dist)
+    sq_median = np.median(sq_dist)
+    return np.exp(-sq_dist / (2.0 * threshold**2 * sq_median))
+
+
+def _center_gram(gram: Float[np.ndarray, "n n"]) -> Float[np.ndarray, "n n"]:
+    """Double-centre a (symmetric) Gram matrix: the ``H K H`` correction."""
+    means = gram.mean(axis=0, keepdims=True)
+    return gram - means - means.T + gram.mean()
+
+
+def centered_rbf_gram(
+    x: Float[np.ndarray, "n d"], threshold: float = 1.0
+) -> Float[np.ndarray, "n n"]:
+    """Double-centred RBF Gram matrix of ``x`` (the ``H K H`` correction applied).
+
+    This is the per-representation half of :func:`rbf_cka`; computing it once per
+    representation lets a set of pairwise CKAs reuse each Gram instead of rebuilding
+    it for every pair.
+    """
+    return _center_gram(_rbf_gram(x, threshold))
+
+
+def cka_from_grams(
+    kx: Float[np.ndarray, "n n"], ky: Float[np.ndarray, "n n"]
+) -> float:
+    """CKA from two already-centred Gram matrices.
+
+    Computes ``HSIC(K, L) / sqrt(HSIC(K, K) HSIC(L, L))`` (the biased estimator).
+    Returns NaN if either Gram is degenerate (zero centred norm).
+    """
+    hsic = float((kx * ky).sum())
+    norm = float(np.linalg.norm(kx) * np.linalg.norm(ky))
+    if norm == 0.0:
+        return float("nan")
+    return hsic / norm
+
+
+def rbf_cka(
+    x: Float[np.ndarray, "n d_x"],
+    y: Float[np.ndarray, "n d_y"],
+    threshold: float = 1.0,
+) -> float:
+    """Nonlinear CKA between two representations using RBF Gram matrices.
+
+    Builds double-centred RBF Gram matrices ``K`` of ``x`` and ``L`` of ``y`` (with
+    the median-distance bandwidth heuristic) and returns their centred-kernel
+    alignment. The result is a symmetric similarity in ``[0, 1]`` invariant to
+    orthogonal transforms and isotropic scaling. Because the Gram matrices are
+    double-centred, ``x`` and ``y`` must NOT be pre-whitened.
+
+    Args:
+        x: First representation (``n`` rows of dimension ``d_x``).
+        y: Second representation (same ``n`` rows, dimension ``d_y``).
+        threshold: Bandwidth as a fraction of the median-distance heuristic.
+
+    Returns:
+        The RBF CKA similarity, or NaN if either representation is degenerate.
+    """
+    return cka_from_grams(
+        centered_rbf_gram(x, threshold), centered_rbf_gram(y, threshold)
+    )
+
+
 def evaluate_transform(
     kind: str,
     source_train: Float[np.ndarray, "n d_in"],
@@ -164,9 +245,12 @@ def evaluate_transform(
     """Fit a transform of type ``kind`` on train pairs and score R^2.
 
     Returns:
-        A tuple ``(r2_train, r2_eval)`` of in-sample and held-out R^2. Comparing
-        the two exposes overfitting (a large train-eval gap).
+        A tuple ``(score_train, score_eval)`` of the in-sample and held-out score.
+        For ``linear``/``rigid`` this is R^2 (comparing the two exposes
+        overfitting); for ``rbf_cka`` it is the RBF CKA similarity on each split.
     """
+    if kind == "rbf_cka":
+        return rbf_cka(source_train, target_train), rbf_cka(source_eval, target_eval)
     if kind == "linear":
         transform = fit_linear(source_train, target_train)
         r2_train = r2_score(transform.apply(source_train), target_train)
