@@ -48,26 +48,46 @@ def _params(cfg: DictConfig) -> dict[str, object]:
     }
 
 
+def _run_name_and_tags(
+    cfg: DictConfig, experiment: str | None
+) -> tuple[str, dict[str, str]]:
+    """Compose a unique run name + filterable tags from the experiment and metric.
+
+    The run name and the ``transforms``/``whiten`` tags encode the similarity
+    metric, so a swept ``linear`` and ``rbf_cka`` land as distinct, comparable
+    MLflow runs instead of colliding under one name.
+    """
+    transforms = "+".join(cfg.transforms)
+    whiten = bool(cfg.get("whiten", False))
+    metric = f"{transforms}{', whiten' if whiten else ''}"
+    run_name = f"{experiment} [{metric}]" if experiment else metric
+    tags = {"transforms": transforms, "whiten": str(whiten)}
+    if experiment:
+        tags["experiment"] = experiment
+    return run_name, tags
+
+
 def log_run(
     cfg: DictConfig,
     results: pd.DataFrame,
     artifacts: Sequence[Path],
-    run_name: str | None = None,
-    tags: Mapping[str, str] | None = None,
+    experiment: str | None = None,
+    extra_tags: Mapping[str, str] | None = None,
 ) -> None:
     """Log one experiment run to MLflow (params, summary metrics, artifacts).
 
     No-op when ``cfg.mlflow.enabled`` is false or MLflow is not installed, so the
-    experiment never fails just because tracking is unavailable.
+    experiment never fails just because tracking is unavailable. The run name and
+    tags encode the experiment and similarity metric, so swept runs stay distinct.
 
     Args:
         cfg: The run config; its ``mlflow`` block selects the tracking URI and
-            experiment name (``tracking_uri: null`` uses the local ``./mlruns`` store
-            or ``$MLFLOW_TRACKING_URI``).
+            experiment name (``tracking_uri: null`` uses ``$MLFLOW_TRACKING_URI``).
         results: The long-format results DataFrame.
         artifacts: Files to attach to the run (``results.csv``, figures).
-        run_name: Optional MLflow run name (e.g. the experiment group).
-        tags: Optional MLflow tags.
+        experiment: The experiment config group (e.g. ``dinov2_scale_similarity``),
+            used to name and tag the run.
+        extra_tags: Optional extra MLflow tags.
     """
     mlflow_cfg = cfg.get("mlflow", {})
     if not mlflow_cfg.get("enabled", True):
@@ -78,18 +98,20 @@ def log_run(
         log.warning("mlflow not installed; skipping experiment tracking.")
         return
 
+    run_name, tags = _run_name_and_tags(cfg, experiment)
+    if extra_tags:
+        tags.update(extra_tags)
     uri = mlflow_cfg.get("tracking_uri")
     if uri:
         mlflow.set_tracking_uri(uri)
     mlflow.set_experiment(mlflow_cfg.get("experiment_name", "repsim"))
     with mlflow.start_run(run_name=run_name):
-        if tags:
-            mlflow.set_tags(dict(tags))
+        mlflow.set_tags(tags)
         mlflow.log_params(_params(cfg))
         mlflow.log_metrics(_summary_metrics(results))
         for artifact in artifacts:
             path = Path(artifact)
             if path.exists():
                 mlflow.log_artifact(str(path))
-    log.info("Logged run to MLflow experiment %r (tracking_uri=%s).",
-             mlflow_cfg.get("experiment_name", "repsim"), mlflow.get_tracking_uri())
+    log.info("Logged MLflow run %r to experiment %r (tracking_uri=%s).",
+             run_name, mlflow_cfg.get("experiment_name", "repsim"), mlflow.get_tracking_uri())

@@ -14,8 +14,8 @@
 # tracks the size gap between scales.
 #
 # The procedure (target sampling, hierarchy chains, null controls, fixed per-node
-# fit/held-out splits) and the two similarities (linear affine least squares +
-# non-fitted RBF CKA, computed in one pass) are identical to
+# fit/held-out splits) and the similarity metrics (linear affine least squares,
+# RBF CKA; selected/swept via the `similarity` config group) are identical to
 # hierarchically_local_similarity -- see that experiment file and conf/config.yaml
 # for the full rationale. Only the model set and fit size differ.
 #
@@ -30,7 +30,7 @@
 #
 # Images are decoded once and fed to all four scales (decode, not the forward
 # pass, is the bottleneck). Output: results.csv, one row per (target, node,
-# ordered scale pair, transform).
+# ordered scale pair) for the selected similarity.
 # ============================================================================
 
 # Targets ------------------------------------------------------------------

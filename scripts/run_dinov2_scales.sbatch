@@ -25,4 +25,6 @@
 export PYTHONUNBUFFERED=1
 
 cd "$SLURM_SUBMIT_DIR"
-srun uv run python -m repsim.run experiment=dinov2_scale_similarity
+# Sweep both similarities as separate runs (distinct MLflow runs). The first run
+# embeds the full pool (slow, cache miss); the rbf_cka run reuses the cache.
+srun uv run python -m repsim.run -m experiment=dinov2_scale_similarity similarity=linear,rbf_cka

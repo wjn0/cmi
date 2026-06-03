@@ -69,5 +69,5 @@ paths = plot_all(out_dir / "results.csv")
 print("figures:", [p.name for p in paths], flush=True)
 
 log_run(cfg, results, artifacts=[out_dir / "results.csv", *paths],
-        run_name=EXPERIMENT, tags={"experiment": EXPERIMENT, "source": "regenerate"})
+        experiment=EXPERIMENT, extra_tags={"source": "regenerate"})
 print("logged run to MLflow", flush=True)

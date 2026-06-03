@@ -76,7 +76,12 @@ def _light_grid(ax: plt.Axes, axis: str = "y") -> None:
 
 
 def _annotate_example_nodes(
-    ax: plt.Axes, sub: pd.DataFrame, xcol: str, ycol: str, n: int = 3
+    ax: plt.Axes,
+    sub: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    n: int = 5,
+    color_fn=None,
 ) -> None:
     """Label ``n`` hierarchical nodes with their synset name to anchor intuition.
 
@@ -85,6 +90,11 @@ def _annotate_example_nodes(
     overall mean. The labelled points are therefore y-axis outliers spread across
     granularity scales (fine → coarse), illustrating what the breadth axis means.
     Random null nodes are excluded -- only real synsets carry interpretable names.
+
+    Args:
+        color_fn: Optional ``row -> colour`` mapping; each label is drawn in its
+            point's colour (defaults to dark grey when not given). Underscores in
+            the synset lemma are shown as spaces (e.g. ``domestic cat``).
     """
     real = sub[sub["grouping"] == "hierarchical"].dropna(subset=[ycol, xcol])
     if real.empty:
@@ -99,10 +109,11 @@ def _annotate_example_nodes(
         if bin_rows.empty:
             continue
         pick = bin_rows.iloc[(bin_rows[ycol] - ymean).abs().to_numpy().argmax()]
+        color = color_fn(pick) if color_fn is not None else "0.15"
         ax.annotate(
-            pick["node_label"], (pick[xcol], pick[ycol]),
+            pick["node_label"].replace("_", " "), (pick[xcol], pick[ycol]),
             xytext=(0, 9 if b % 2 == 0 else -12), textcoords="offset points",
-            fontsize=6.5, ha="center", color="0.15", zorder=5,
+            fontsize=6.5, ha="center", color=color, zorder=5,
             arrowprops=dict(arrowstyle="-", lw=0.5, color="0.45"),
         )
 
@@ -161,7 +172,8 @@ def plot_r2_vs_granularity(results: pd.DataFrame, out_dir: Path) -> Path:
                 slope, intercept = np.polyfit(x, y, 1)
                 ax.plot(2 ** xgrid, slope * xgrid + intercept, color=palette[pair],
                         lw=1.8, solid_capstyle="round", zorder=3, label=pair)
-        _annotate_example_nodes(ax, hier, "n_classes", "r2_eval")
+        _annotate_example_nodes(ax, hier, "n_classes", "r2_eval",
+                                color_fn=lambda row: palette[row["pair"]])
         ax.set_xscale("log", base=2)
         _light_grid(ax, "y")
         ax.set_xlabel("Granularity — no. of ImageNet classes (finer → coarser)")
@@ -194,7 +206,8 @@ def plot_real_vs_null(results: pd.DataFrame, out_dir: Path) -> Path:
         centres, means, ses = _binned_trend(sub)
         ax.errorbar(centres, means, yerr=ses, lw=2.5, marker="o", capsize=3,
                     color=colors.get(grouping, "0.5"), label=labels.get(grouping, grouping))
-    _annotate_example_nodes(ax, chosen, "n_classes", "r2_eval")
+    _annotate_example_nodes(ax, chosen, "n_classes", "r2_eval",
+                            color_fn=lambda row: colors.get(row["grouping"], "0.5"))
     ax.set_xscale("log", base=2)
     ax.set_xlabel("node breadth: #ImageNet classes (log scale)")
     ax.set_ylabel(f"held-out {_metric_label(transform)}")

@@ -1,0 +1,5 @@
+# @package _global_
+# Similarity metric: affine least-squares linear map, R^2 (in-sample + held-out).
+# Its own run so it lands as a distinct MLflow run (sweep with -m similarity=...).
+transforms: [linear]
+whiten: false

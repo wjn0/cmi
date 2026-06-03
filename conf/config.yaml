@@ -9,19 +9,21 @@
 #   uv run python -m repsim.run experiment=hierarchically_local_similarity
 #   uv run python -m repsim.run experiment=dinov2_scale_similarity
 #
-# Sweep BOTH experiments in one launch (Hydra multirun):
+# The similarity metric is its own `similarity` config group (linear | rbf_cka).
+# Sweep both experiments AND both similarities in one launch (Hydra multirun) --
+# each (experiment, similarity) pair is a separate run / MLflow run:
 #
 #   uv run python -m repsim.run -m \
-#     experiment=hierarchically_local_similarity,dinov2_scale_similarity
+#     experiment=hierarchically_local_similarity,dinov2_scale_similarity \
+#     similarity=linear,rbf_cka
 #
-# Every run computes BOTH similarities in a single pass over the cached
-# embeddings -- see `transforms` below. The per-experiment scientific
-# descriptions live in the experiment files.
+# The per-experiment scientific descriptions live in the experiment files.
 # ============================================================================
 
 defaults:
   - _self_
   - experiment: hierarchically_local_similarity
+  - similarity: linear
 
 seed: 0
 
@@ -49,21 +51,17 @@ dataset:
   split: train               # single split; held-out is carved from each node
 
 # Transforms & evaluation --------------------------------------------------
-# Both similarities are computed in one pass, so every results.csv carries the
-# linear and RBF-CKA rows for the same per-node splits (directly comparable):
+# The similarity metric is a config group (conf/similarity/*.yaml) so each metric
+# is its OWN run -- sweep them as a Hydra axis instead of combining them in one
+# results.csv (which collided in MLflow under one run name):
+#   uv run python -m repsim.run -m similarity=linear,rbf_cka
 #   - linear : affine least squares  min_{W,b} || f_i W + b - f_j ||_F,
 #              R^2 = 1 - SS_res/SS_tot, in-sample and held-out.
 #   - rbf_cka: nonlinear centred kernel alignment, Gaussian kernel (median
-#              bandwidth), a non-fitted symmetric [0,1] similarity.
-# rbf_cka double-centres its Gram matrix, so it REQUIRES raw (un-whitened)
-# embeddings -- the two run together only at whiten=false (enforced in code).
-# Add `rigid` for the PCA + similarity-Procrustes transform.
-transforms: [linear, rbf_cka]
-whiten: false                # PCA-whiten each model's embeddings per node (fit on
-                             # the fit split). whiten=true + linear == linear CKA,
-                             # but whiten=true is INCOMPATIBLE with rbf_cka, so to
-                             # measure linear CKA drop rbf_cka first, e.g.
-                             #   transforms=[linear] whiten=true.
+#              bandwidth), a non-fitted symmetric [0,1] similarity (needs whiten=false).
+# `transforms` and `whiten` are set by the selected similarity group (defaults to
+# linear above). whiten=true + linear == linear CKA (override manually). Add `rigid`
+# to a transforms list for the PCA + similarity-Procrustes transform.
 
 # Runtime ------------------------------------------------------------------
 device: cuda                 # fails loudly if CUDA is unavailable

@@ -1,0 +1,6 @@
+# @package _global_
+# Similarity metric: nonlinear RBF CKA (median-bandwidth, double-centred kernel).
+# Requires un-whitened embeddings (whiten=false, enforced in code). Its own run so
+# it lands as a distinct MLflow run (sweep with -m similarity=...).
+transforms: [rbf_cka]
+whiten: false

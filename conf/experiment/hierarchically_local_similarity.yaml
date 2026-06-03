@@ -32,8 +32,9 @@
 #      fit images and a disjoint `n_eval_samples` held-out images. The fixed sizes
 #      remove the sample-size confound (R^2 depends on fit-set size, which would
 #      otherwise track breadth). Skip any node that cannot supply both counts.
-#      Then evaluate every ordered model pair under both similarities (linear
-#      affine least squares, and non-fitted RBF CKA) -- see conf/config.yaml.
+#      Then evaluate every ordered model pair under the selected similarity
+#      (linear affine least squares, or non-fitted RBF CKA; pick/sweep via the
+#      `similarity` config group) -- see conf/config.yaml.
 #
 # Held-out images are a disjoint random subset of the SAME node's images (same
 # class mix, unseen samples), so even breadth-5 nodes get a large balanced

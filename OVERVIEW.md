@@ -20,7 +20,9 @@ Experiments in cross-model representation similarity, alignment, and identifiabi
   - `repsim/tracking.py` — Optional MLflow logging of each run (config params, summary held-out/in-sample scores per transform, and `results.csv`/figures as artifacts); no-op if disabled or MLflow unavailable.
   - `repsim/log.py` — Flushing stdout logging setup so progress appears live in SLURM log files (bare `print` is block-buffered to files).
   - `repsim/run.py` — Hydra entrypoint (`uv run python -m repsim.run`).
-- `conf/config.yaml` — Shared base config + `experiment` config group; sets `transforms: [linear, rbf_cka]` (both similarities in one pass), `n_jobs` (CPU fan-out for the eval) and the `mlflow` tracking block, and selects an experiment. Sweep both via `-m experiment=hierarchically_local_similarity,dinov2_scale_similarity`.
+- `conf/config.yaml` — Shared base config + `experiment` and `similarity` config groups; sets `n_jobs` (CPU fan-out for the eval) and the `mlflow` tracking block. Sweep both axes via `-m experiment=hierarchically_local_similarity,dinov2_scale_similarity similarity=linear,rbf_cka`.
+- `conf/similarity/linear.yaml` — Similarity-metric group: affine least-squares linear R² (`transforms=[linear]`, `whiten=false`); its own MLflow run.
+- `conf/similarity/rbf_cka.yaml` — Similarity-metric group: nonlinear RBF CKA (`transforms=[rbf_cka]`, `whiten=false`); its own MLflow run.
 - `conf/experiment/hierarchically_local_similarity.yaml` — Experiment overrides: DINOv2/SigLIP/MAE cross-model, n_fit=3840.
 - `conf/experiment/dinov2_scale_similarity.yaml` — Experiment overrides: the four DINOv2 scales (S/B/L/g), single global n_fit=7680.
 - `scripts/cache_check.py` — Verify the embedding cache hits for the current config (labels only, no model loading) before a slow CPU run.

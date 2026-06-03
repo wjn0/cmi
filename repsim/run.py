@@ -27,12 +27,10 @@ def main(cfg: DictConfig) -> None:
     out_dir = Path(hydra_cfg.runtime.output_dir)
     results = run_experiment(cfg, output_dir=out_dir)
     figures = plot_all(out_dir / "results.csv")
-    experiment = hydra_cfg.runtime.choices.get("experiment")
     log_run(
         cfg, results,
         artifacts=[out_dir / "results.csv", *figures],
-        run_name=experiment,
-        tags={"experiment": experiment} if experiment else None,
+        experiment=hydra_cfg.runtime.choices.get("experiment"),
     )
 
 
