@@ -70,6 +70,23 @@ device: cuda                 # fails loudly if CUDA is unavailable
 cache_dir: ./outputs/embeddings
 # batch_size and num_workers are experiment-specific (model size / decode load).
 
+# The per-node eval is embarrassingly parallel, so it fans out across CPU workers
+# (joblib). -1 = the whole SLURM allocation (os.sched_getaffinity, not the node's
+# total cores). NOTE: each worker holds its own RBF-CKA Gram matrices, which are
+# O(n_fit_samples^2) -- on a memory-tight node with a large n_fit, lower n_jobs.
+n_jobs: -1
+
+# Experiment tracking ------------------------------------------------------
+# Each run is logged to MLflow (params + summary metrics + results.csv/figures as
+# artifacts) so results can be browsed in the UI instead of dug out of outputs/.
+# Browse with:  uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+mlflow:
+  enabled: true
+  tracking_uri: sqlite:///mlflow.db  # local single-file SQLite store at project root
+                                     # (modern MLflow drops the bare ./mlruns file store).
+                                     # Override with a remote server, or $MLFLOW_TRACKING_URI.
+  experiment_name: repsim
+
 hydra:
   job:
     chdir: false             # keep cwd at project root so cache_dir stays stable

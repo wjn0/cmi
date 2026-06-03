@@ -2,4 +2,9 @@ logs/
 outputs/
 multirun/
 
+# MLflow local tracking store + artifacts
+mlflow.db
+mlruns/
+mlartifacts/
+
 __pycache__

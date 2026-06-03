@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from repsim.experiment import _evaluate
+from repsim.experiment import _evaluate, _rows_by_class
 from repsim.imagenet_hierarchy import HierarchyNode
 
 
@@ -17,10 +17,11 @@ def _fake_model(name: str) -> SimpleNamespace:
     return SimpleNamespace(spec=SimpleNamespace(name=name))
 
 
-def _setup(n_fit: int, n_eval: int):
+def _setup(n_fit: int, n_eval: int, n_jobs: int = 1):
     """Two models, two nodes (one broad, one too small), and random embeddings."""
     cfg = OmegaConf.create(
-        {"seed": 0, "n_fit_samples": n_fit, "n_eval_samples": n_eval, "transforms": ["linear"]}
+        {"seed": 0, "n_fit_samples": n_fit, "n_eval_samples": n_eval,
+         "transforms": ["linear"], "n_jobs": n_jobs}
     )
     models = [_fake_model("a"), _fake_model("b")]
     # Broad node spans classes {0, 1} (plenty of rows); small node is class {2}.
@@ -55,3 +56,24 @@ def test_nodes_without_enough_samples_are_skipped():
     """The small node (3 rows) cannot supply 10 fit + 4 held-out; only broad remains."""
     records = _evaluate(*_setup(n_fit=10, n_eval=4))
     assert {r["node"] for r in records} == {"broad"}
+
+
+def test_parallel_eval_matches_serial():
+    """Fanning the eval across workers gives identical records to the serial path.
+
+    The per-node split is seeded from a spawned SeedSequence, so it must not depend
+    on how many workers run the nodes.
+    """
+    serial = _evaluate(*_setup(n_fit=50, n_eval=20, n_jobs=1))
+    parallel = _evaluate(*_setup(n_fit=50, n_eval=20, n_jobs=2))
+    key = lambda r: (r["node"], r["source"], r["target_model"], r["transform"])
+    assert sorted(serial, key=key) == sorted(parallel, key=key)
+
+
+def test_rows_by_class_groups_every_row():
+    """Each class maps to exactly its row positions, in ascending order."""
+    sample_classes = np.array([2, 0, 1, 0, 2, 0])
+    by_class = _rows_by_class(sample_classes)
+    assert sorted(by_class) == [0, 1, 2]
+    assert by_class[0].tolist() == [1, 3, 5]
+    assert by_class[2].tolist() == [0, 4]

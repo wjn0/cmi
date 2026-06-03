@@ -6,7 +6,7 @@ Experiments in cross-model representation similarity, alignment, and identifiabi
 
 - `pyproject.toml` — Project metadata and dependencies (uv-managed).
 - `uv.lock` — Pinned dependency lockfile.
-- `README.md` — Short project description.
+- `README.md` — Project description + how to run the four experiments (linear/CKA × cross-model/within-DINO) and launch the MLflow UI.
 - `CLAUDE.md` — Development guidelines for this project.
 - `OVERVIEW.md` — This file; one-line description of every file in the project.
 - `repsim/` — Main package.
@@ -14,12 +14,13 @@ Experiments in cross-model representation similarity, alignment, and identifiabi
   - `repsim/imagenet_hierarchy.py` — WordNet navigation of the ImageNet-1k label tree (class↔synset mapping, build a target's descendant→self→ancestor node chain, and size-matched random-class null nodes).
   - `repsim/models.py` — Load pretrained vision models (transformers/timm) and extract native pooled embeddings.
   - `repsim/transforms.py` — Linear (affine least-squares) and rigid (PCA + similarity Procrustes) cross-model transforms with R² scoring, nonlinear RBF CKA (median-bandwidth, double-centred kernel; needs un-whitened inputs), plus optional PCA whitening of embeddings.
-  - `repsim/inference.py` — Seeded per-class image sampling and cached embedding extraction (multi-worker DataLoader: decode+preprocess parallelised across CPUs to keep the GPU fed).
-  - `repsim/experiment.py` — Orchestrates the `hierarchically_local_similarity` experiment (full-1000-class embed once, per-target descendant→ancestor node chains deduplicated by synset + null nodes, fixed within-node fit/held-out split, in-sample + held-out R²); writes `results.csv`.
+  - `repsim/inference.py` — Seeded per-class image sampling and cached embedding extraction (multi-worker DataLoader: decode+preprocess parallelised across CPUs to keep the GPU fed); returns memory-mapped embedding matrices so the per-node eval reads small row slices without loading ~15 GB into RAM.
+  - `repsim/experiment.py` — Orchestrates the `hierarchically_local_similarity` experiment (full-1000-class embed once, per-target descendant→ancestor node chains deduplicated by synset + null nodes, fixed within-node fit/held-out split, in-sample + held-out R²); the embarrassingly-parallel per-node eval fans out across CPU workers (joblib, `n_jobs`, SLURM-aware) with a precomputed class→rows index; writes `results.csv`.
   - `repsim/plots.py` — Nature-styled figures from a results CSV (per-model-pair R² vs granularity trendlines with jittered points, real-vs-null locality control, per-model-pair overfitting scatter coloured by breadth, model-pair heatmap).
+  - `repsim/tracking.py` — Optional MLflow logging of each run (config params, summary held-out/in-sample scores per transform, and `results.csv`/figures as artifacts); no-op if disabled or MLflow unavailable.
   - `repsim/log.py` — Flushing stdout logging setup so progress appears live in SLURM log files (bare `print` is block-buffered to files).
   - `repsim/run.py` — Hydra entrypoint (`uv run python -m repsim.run`).
-- `conf/config.yaml` — Shared base config + `experiment` config group; sets `transforms: [linear, rbf_cka]` (both similarities in one pass) and selects an experiment. Sweep both via `-m experiment=hierarchically_local_similarity,dinov2_scale_similarity`.
+- `conf/config.yaml` — Shared base config + `experiment` config group; sets `transforms: [linear, rbf_cka]` (both similarities in one pass), `n_jobs` (CPU fan-out for the eval) and the `mlflow` tracking block, and selects an experiment. Sweep both via `-m experiment=hierarchically_local_similarity,dinov2_scale_similarity`.
 - `conf/experiment/hierarchically_local_similarity.yaml` — Experiment overrides: DINOv2/SigLIP/MAE cross-model, n_fit=3840.
 - `conf/experiment/dinov2_scale_similarity.yaml` — Experiment overrides: the four DINOv2 scales (S/B/L/g), single global n_fit=7680.
 - `scripts/cache_check.py` — Verify the embedding cache hits for the current config (labels only, no model loading) before a slow CPU run.

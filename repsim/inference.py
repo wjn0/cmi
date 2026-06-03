@@ -140,9 +140,13 @@ def extract_embeddings(
         m.spec.name: cache_dir / f"{_cache_key(dataset_id, split, index, m.spec.name)}.npy"
         for m in models
     }
+    # Return memory-mapped arrays: the embedding matrices are large (~15 GB across
+    # the four DINOv2 scales) and the downstream per-node eval only ever reads small
+    # row slices, so memory-mapping keeps them out of RAM and lets parallel eval
+    # workers share one read-only copy via the OS page cache (no per-worker pickle).
     if all(p.exists() for p in paths.values()):
-        log.info("Loading cached embeddings for %d models from %s.", len(paths), cache_dir)
-        return {name: np.load(p) for name, p in paths.items()}
+        log.info("Loading cached embeddings for %d models from %s (memory-mapped).", len(paths), cache_dir)
+        return {name: np.load(p, mmap_mode="r") for name, p in paths.items()}
 
     log.info(
         "Cache miss: embedding %d images for %d models (%s) with %d workers. This is the slow path.",
@@ -163,8 +167,9 @@ def extract_embeddings(
         for model, tensors in zip(models, batch):
             chunks[model.spec.name].append(model.embed(tensors).float().cpu().numpy())
 
-    embeddings = {name: np.concatenate(parts, axis=0) for name, parts in chunks.items()}
-    for name, matrix in embeddings.items():
-        np.save(paths[name], matrix)
+    for name, parts in chunks.items():
+        np.save(paths[name], np.concatenate(parts, axis=0))
     log.info("Embedded and cached %d images for %d models.", len(index.rows), len(models))
-    return embeddings
+    # Re-open the freshly written caches as memmaps (see the cache-hit path) so the
+    # in-RAM copies are freed before the memory-heavy per-node eval that follows.
+    return {name: np.load(p, mmap_mode="r") for name, p in paths.items()}

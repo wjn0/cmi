@@ -21,6 +21,7 @@ class sets of equal size.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -28,6 +29,7 @@ import numpy as np
 import pandas as pd
 import torch
 from datasets import load_dataset
+from joblib import Parallel, delayed
 from omegaconf import DictConfig, OmegaConf
 
 from repsim.imagenet_hierarchy import (
@@ -44,7 +46,23 @@ from repsim.transforms import centered_rbf_gram, cka_from_grams, evaluate_transf
 log = logging.getLogger(__name__)
 
 _NULL_KEY = "__random__"
-_LOG_EVERY = 25  # log eval progress every this many nodes
+
+
+def _resolve_n_jobs(requested: int) -> int:
+    """Resolve a joblib ``n_jobs`` value, respecting the SLURM CPU allocation.
+
+    ``-1`` (or any non-positive value) means "use every available CPU", but the
+    machine's total core count is the wrong number under SLURM -- the job is only
+    allocated ``--cpus-per-task`` cores. ``os.sched_getaffinity`` returns the cores
+    the process is actually pinned to, which is exactly that allocation, so we use
+    it to avoid oversubscribing the node.
+    """
+    if requested > 0:
+        return requested
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not available on all platforms
+        return os.cpu_count() or 1
 
 
 def _resolve_device(requested: str) -> str:
@@ -160,6 +178,103 @@ def run_experiment(cfg: DictConfig, output_dir: Path | None = None) -> pd.DataFr
     return results
 
 
+def _rows_by_class(sample_classes: np.ndarray) -> dict[int, np.ndarray]:
+    """Map each class index to its (ascending) row positions in ``sample_classes``.
+
+    Built once so each node selects its rows by concatenating a handful of per-class
+    row arrays, instead of rescanning the whole sample with ``np.isin`` for every one
+    of the hundreds of nodes.
+    """
+    order = np.argsort(sample_classes, kind="stable")
+    sorted_classes = sample_classes[order]
+    boundaries = np.flatnonzero(np.diff(sorted_classes)) + 1
+    keys = sorted_classes[np.concatenate(([0], boundaries))]
+    return {int(k): rows for k, rows in zip(keys, np.split(order, boundaries))}
+
+
+def _node_rows(class_indices, rows_by_class: dict[int, np.ndarray]) -> np.ndarray:
+    """Return the sorted sample-row positions belonging to a node's classes."""
+    parts = [rows_by_class[c] for c in class_indices if c in rows_by_class]
+    if not parts:
+        return np.empty(0, dtype=np.int64)
+    return np.sort(np.concatenate(parts))
+
+
+def _evaluate_node(
+    target: str,
+    node: HierarchyNode,
+    model_names: list[str],
+    embeddings: Embeddings,
+    rows_by_class: dict[int, np.ndarray],
+    n_fit: int,
+    n_eval: int,
+    whiten: bool,
+    use_cka: bool,
+    transforms: list[str],
+    seed: np.random.SeedSequence,
+) -> list[dict] | None:
+    """Fit and score every ordered model pair at one node -- one parallel task.
+
+    Returns the node's records, or ``None`` if it cannot supply ``n_fit + n_eval``
+    images. Self-contained so it runs cleanly in a worker process: it takes model
+    *names* (not the loaded GPU models, which cannot be pickled) and reads small row
+    slices from the shared memory-mapped embeddings. The per-node split is seeded
+    from a spawned :class:`~numpy.random.SeedSequence`, so it is reproducible and
+    independent of the order nodes happen to run in.
+
+    Whitening (when enabled) and the centred RBF Gram matrices are each computed
+    once per model per split and reused across all ordered pairs, rather than
+    rebuilt for every pair.
+    """
+    rows = _node_rows(node.class_indices, rows_by_class)
+    if rows.size < n_fit + n_eval:
+        return None
+    rng = np.random.default_rng(seed)
+    shuffled = rng.permutation(rows)
+    fit_idx, eval_idx = shuffled[:n_fit], shuffled[n_fit : n_fit + n_eval]
+    # Materialise the row slices into RAM (np.asarray detaches them from the
+    # read-only memmap) once per model, then reuse across whitening, Grams and pairs.
+    fit_emb = {name: np.asarray(embeddings[name][fit_idx]) for name in model_names}
+    eval_emb = {name: np.asarray(embeddings[name][eval_idx]) for name in model_names}
+    if whiten:
+        for name in model_names:
+            w = fit_whitening(fit_emb[name])
+            fit_emb[name], eval_emb[name] = w.apply(fit_emb[name]), w.apply(eval_emb[name])
+    gram_fit = {n: centered_rbf_gram(e) for n, e in fit_emb.items()} if use_cka else {}
+    gram_eval = {n: centered_rbf_gram(e) for n, e in eval_emb.items()} if use_cka else {}
+    records: list[dict] = []
+    for src in model_names:
+        for tgt in model_names:
+            if src == tgt:
+                continue
+            for kind in transforms:
+                if kind == "rbf_cka":
+                    r2_train = cka_from_grams(gram_fit[src], gram_fit[tgt])
+                    r2_eval = cka_from_grams(gram_eval[src], gram_eval[tgt])
+                else:
+                    r2_train, r2_eval = evaluate_transform(
+                        kind, fit_emb[src], fit_emb[tgt], eval_emb[src], eval_emb[tgt]
+                    )
+                records.append({
+                    "target": target,
+                    "node": node.key,
+                    "node_label": node.label,
+                    "relation": node.relation,
+                    "grouping": node.grouping,
+                    "depth": node.depth,
+                    "n_classes": len(node.class_indices),
+                    "n_train": n_fit,
+                    "n_eval": n_eval,
+                    "source": src,
+                    "target_model": tgt,
+                    "transform": kind,
+                    "whiten": bool(whiten),
+                    "r2_train": r2_train,
+                    "r2_eval": r2_eval,
+                })
+    return records
+
+
 def _evaluate(
     cfg: DictConfig,
     target_nodes: dict[str, list[HierarchyNode]],
@@ -175,77 +290,35 @@ def _evaluate(
     sample-size confound when comparing R^2 across nodes of differing breadth.
     Nodes that cannot supply both counts are skipped.
 
-    When ``cfg.whiten`` is set, each model's embeddings are PCA-whitened per node
-    (mean-centred, decorrelated, scaled to unit variance) with the whitening fitted
-    on that node's fit split and applied to both splits. R^2 is then measured in the
-    target's whitened space, where every dimension contributes equally to SS_tot
-    rather than high-variance directions dominating.
-
-    For the ``rbf_cka`` transform each model's centred RBF Gram matrix is built once
-    per node (per split) and reused across every model pair, rather than rebuilt for
-    each ordered pair.
+    The nodes are embarrassingly parallel (each fits and scores its own pairs
+    independently), so they are distributed across CPU workers with joblib
+    (``cfg.n_jobs``; ``-1`` uses the whole SLURM allocation). The large embeddings
+    are memory-mapped and shared read-only across workers, so fanning out costs no
+    extra RAM. See :func:`_evaluate_node` for the per-node work.
     """
     n_fit, n_eval = cfg.n_fit_samples, cfg.n_eval_samples
     whiten = cfg.get("whiten", False)
     use_cka = "rbf_cka" in cfg.transforms
-    rng = np.random.default_rng(cfg.seed)
-    records: list[dict] = []
-    skipped = 0
+    transforms = list(cfg.transforms)
+    model_names = [m.spec.name for m in models]
     all_nodes = [(target, node) for target, nodes in target_nodes.items() for node in nodes]
-    log.info("Evaluating %d nodes (whiten=%s); logging every %d nodes.",
-             len(all_nodes), whiten, _LOG_EVERY)
+    rows_by_class = _rows_by_class(sample_classes)
+    seeds = np.random.SeedSequence(cfg.seed).spawn(len(all_nodes))
+    n_jobs = _resolve_n_jobs(int(cfg.get("n_jobs", -1)))
+
+    log.info("Evaluating %d nodes across %d worker(s) (whiten=%s, transforms=%s).",
+             len(all_nodes), n_jobs, whiten, transforms)
     start = time.monotonic()
-    for i, (target, node) in enumerate(all_nodes, 1):
-        rows = np.flatnonzero(np.isin(sample_classes, node.class_indices))
-        if rows.size < n_fit + n_eval:
-            skipped += 1
-            continue
-        shuffled = rng.permutation(rows)
-        fit_idx, eval_idx = shuffled[:n_fit], shuffled[n_fit : n_fit + n_eval]
-        # Fit/apply whitening once per model per node (it depends only on the
-        # model's own fit split), not redundantly inside every ordered pair.
-        fit_emb = {m.spec.name: embeddings[m.spec.name][fit_idx] for m in models}
-        eval_emb = {m.spec.name: embeddings[m.spec.name][eval_idx] for m in models}
-        if whiten:
-            for name in list(fit_emb):
-                w = fit_whitening(fit_emb[name])
-                fit_emb[name], eval_emb[name] = w.apply(fit_emb[name]), w.apply(eval_emb[name])
-        # Build each model's centred RBF Gram once per node (reused across pairs).
-        gram_fit = {n: centered_rbf_gram(e) for n, e in fit_emb.items()} if use_cka else {}
-        gram_eval = {n: centered_rbf_gram(e) for n, e in eval_emb.items()} if use_cka else {}
-        for src in models:
-            for tgt in models:
-                if src.spec.name == tgt.spec.name:
-                    continue
-                xs_tr, ys_tr = fit_emb[src.spec.name], fit_emb[tgt.spec.name]
-                xs_ev, ys_ev = eval_emb[src.spec.name], eval_emb[tgt.spec.name]
-                for kind in cfg.transforms:
-                    if kind == "rbf_cka":
-                        r2_train = cka_from_grams(gram_fit[src.spec.name], gram_fit[tgt.spec.name])
-                        r2_eval = cka_from_grams(gram_eval[src.spec.name], gram_eval[tgt.spec.name])
-                    else:
-                        r2_train, r2_eval = evaluate_transform(kind, xs_tr, ys_tr, xs_ev, ys_ev)
-                    records.append({
-                        "target": target,
-                        "node": node.key,
-                        "node_label": node.label,
-                        "relation": node.relation,
-                        "grouping": node.grouping,
-                        "depth": node.depth,
-                        "n_classes": len(node.class_indices),
-                        "n_train": n_fit,
-                        "n_eval": n_eval,
-                        "source": src.spec.name,
-                        "target_model": tgt.spec.name,
-                        "transform": kind,
-                        "whiten": bool(whiten),
-                        "r2_train": r2_train,
-                        "r2_eval": r2_eval,
-                    })
-        if i % _LOG_EVERY == 0 or i == len(all_nodes):
-            elapsed = time.monotonic() - start
-            log.info("  %d/%d nodes (%d evaluated, %d skipped, %d rows, %.0fs elapsed).",
-                     i, len(all_nodes), i - skipped, skipped, len(records), elapsed)
-    log.info("Skipped %d nodes below the minimum-sample threshold; %d rows total.",
-             skipped, len(records))
+    per_node = Parallel(n_jobs=n_jobs)(
+        delayed(_evaluate_node)(
+            target, node, model_names, embeddings, rows_by_class,
+            n_fit, n_eval, whiten, use_cka, transforms, seed,
+        )
+        for (target, node), seed in zip(all_nodes, seeds)
+    )
+    records = [r for node_records in per_node if node_records for r in node_records]
+    skipped = sum(node_records is None for node_records in per_node)
+    log.info("Evaluated %d nodes (%d skipped below the %d-sample threshold) in %.0fs; %d rows.",
+             len(all_nodes) - skipped, skipped, n_fit + n_eval,
+             time.monotonic() - start, len(records))
     return records
