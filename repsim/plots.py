@@ -49,6 +49,16 @@ _NATURE_RC = {
 _OKABE_ITO = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#000000"]
 
 
+def _palette(keys: list[str]) -> dict[str, tuple | str]:
+    """One distinct colour per key: Okabe-Ito while it fits, else an evenly-spaced
+    HUSL wheel so large key sets never repeat a colour."""
+    if len(keys) <= len(_OKABE_ITO):
+        colors = _OKABE_ITO
+    else:
+        colors = sns.husl_palette(len(keys), l=0.45)
+    return {k: colors[i] for i, k in enumerate(keys)}
+
+
 def _pair_label(df: pd.DataFrame) -> pd.Series:
     """Directional model-pair label ``source -> target_model`` (e.g. dinov2 → mae)."""
     return df["source"] + " → " + df["target_model"]
@@ -85,11 +95,13 @@ def _annotate_example_nodes(
 ) -> None:
     """Label ``n`` hierarchical nodes with their synset name to anchor intuition.
 
-    Splits the points into ``n`` equal-count bins along ``log2(xcol)`` (breadth)
-    and, in each bin, labels the single node whose ``ycol`` deviates most from the
-    overall mean. The labelled points are therefore y-axis outliers spread across
-    granularity scales (fine → coarse), illustrating what the breadth axis means.
-    Random null nodes are excluded -- only real synsets carry interpretable names.
+    Splits the points into ``n`` equal-width bins along ``log2(xcol)`` (breadth),
+    so the labels spread uniformly across the log axis rather than clumping where
+    data is dense, and in each bin labels the single node whose ``ycol`` deviates
+    most from the overall mean. The labelled points are therefore y-axis outliers
+    spread across granularity scales (fine → coarse), illustrating what the
+    breadth axis means. Random null nodes are excluded -- only real synsets carry
+    interpretable names.
 
     Args:
         color_fn: Optional ``row -> colour`` mapping; each label is drawn in its
@@ -100,8 +112,7 @@ def _annotate_example_nodes(
     if real.empty:
         return
     logx = np.log2(real[xcol].to_numpy())
-    edges = np.quantile(logx, np.linspace(0, 1, n + 1))
-    edges[-1] += 1e-9  # include the widest node in the last bin
+    edges = np.linspace(logx.min(), logx.max() + 1e-9, n + 1)
     which = np.clip(np.digitize(logx, edges) - 1, 0, n - 1)
     ymean = real[ycol].to_numpy().mean()
     for b in range(n):
@@ -154,8 +165,12 @@ def plot_r2_vs_granularity(results: pd.DataFrame, out_dir: Path) -> Path:
     ].copy()
     hier["pair"] = _pair_label(hier)
     pairs = sorted(hier["pair"].unique())
-    palette = {p: _OKABE_ITO[i % len(_OKABE_ITO)] for i, p in enumerate(pairs)}
+    palette = _palette(pairs)
     rng = np.random.default_rng(0)
+    # Multiplicative jitter on the log2 axis, stored per row so the example-node
+    # labels land exactly on their jittered points.
+    jitter = rng.uniform(-0.13, 0.13, size=len(hier))
+    hier["x_jittered"] = hier["n_classes"].to_numpy() * 2.0**jitter
 
     with plt.rc_context(_NATURE_RC):
         fig, ax = plt.subplots(figsize=(5.2, 3.6))
@@ -165,14 +180,13 @@ def plot_r2_vs_granularity(results: pd.DataFrame, out_dir: Path) -> Path:
             sub = hier[hier["pair"] == pair]
             x = np.log2(sub["n_classes"].to_numpy())
             y = sub["r2_eval"].to_numpy()
-            jitter = rng.uniform(-0.13, 0.13, size=x.size)  # multiplicative on log2 axis
-            ax.scatter(2 ** (x + jitter), y, s=9, color=palette[pair],
+            ax.scatter(sub["x_jittered"], y, s=9, color=palette[pair],
                        alpha=0.30, linewidths=0, zorder=2)
             if x.size >= 2 and np.ptp(x) > 0:
-                slope, intercept = np.polyfit(x, y, 1)
+                slope, intercept = np.polyfit(x, y, 1)  # fit on un-jittered breadth
                 ax.plot(2 ** xgrid, slope * xgrid + intercept, color=palette[pair],
                         lw=1.8, solid_capstyle="round", zorder=3, label=pair)
-        _annotate_example_nodes(ax, hier, "n_classes", "r2_eval",
+        _annotate_example_nodes(ax, hier, "x_jittered", "r2_eval",
                                 color_fn=lambda row: palette[row["pair"]])
         ax.set_xscale("log", base=2)
         _light_grid(ax, "y")
