@@ -1,12 +1,12 @@
 # @package _global_
 # ============================================================================
-# Experiment: dinov2_scale_similarity
+# Experiment: granularity_similarity / configuration: dinov2_scale
 # ============================================================================
 # Question: how well can ONE DINOv2 scale's representation be mapped onto
 # ANOTHER scale's, and how does that cross-scale alignment depend on the
 # *granularity* (breadth) of the region of the ImageNet/WordNet label hierarchy
-# we measure it over? This is the `hierarchically_local_similarity` design with
-# the three heterogeneous models (DINOv2/SigLIP/MAE) replaced by the four DINOv2
+# we measure it over? This is the `cross_model` design with the three
+# heterogeneous models (DINOv2/SigLIP/MAE) replaced by the four DINOv2
 # scales -- small (d=384), base (768), large (1024), giant (1536) -- all trained
 # the same way and differing only in capacity. Each ordered scale pair S_i->S_j
 # is its own R^2-vs-granularity trendline; comparing them shows whether the
@@ -16,22 +16,26 @@
 # The procedure (target sampling, hierarchy chains, null controls, fixed per-node
 # fit/held-out splits) and the similarity metrics (linear affine least squares,
 # RBF CKA; selected/swept via the `similarity` config group) are identical to
-# hierarchically_local_similarity -- see that experiment file and conf/config.yaml
-# for the full rationale. Only the model set and fit size differ.
+# cross_model -- see that file, _shared.yaml and conf/config.yaml for the full
+# rationale. Only the model set and fit size differ.
 #
 # Because the four scales have different d_model (384..1536), a single global
 # `n_fit_samples` is used (rather than per-pair 5xd) so every scale pair is fit
 # and scored on the SAME images at every node -- the only thing that differs
 # between pairs is the representations, making the trendlines directly
 # comparable. n_fit must exceed the largest dim (1536); 5x giant = 7680
-# generalizes (see hierarchically_local_similarity notes on overfitting). At
-# per_class_limit=1000 a node then needs >= 8 leaf classes (8 x ~1000 > 7930),
-# so the finest evaluated nodes have breadth ~8.
+# generalizes (see cross_model notes on overfitting). At per_class_limit=1000 a
+# node then needs >= 8 leaf classes (8 x ~1000 > 7930), so the finest evaluated
+# nodes have breadth ~8.
 #
 # Images are decoded once and fed to all four scales (decode, not the forward
 # pass, is the bottleneck). Output: results.csv, one row per (target, node,
 # ordered scale pair) for the selected similarity.
 # ============================================================================
+
+defaults:
+  - granularity_similarity/_shared
+  - _self_
 
 # Targets ------------------------------------------------------------------
 random_target_min_classes: 8 # min leaf classes -- >= breadth floor so the target

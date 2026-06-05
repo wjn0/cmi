@@ -14,7 +14,7 @@
 #
 # Embed the full 1000-class pool once for each of the four DINOv2 scales
 # (small/base/large/giant CLS poolers), cache them, then run the
-# dinov2_scale_similarity experiment (per-node fixed fit/held-out splits, both the
+# granularity_similarity/dinov2_scale experiment (per-node fixed fit/held-out splits, both the
 # linear transform and RBF CKA between every ordered scale pair) and emit plots.
 # Image decoding --
 # not the forward pass -- is the bottleneck, so each image is decoded once and
@@ -27,4 +27,4 @@ export PYTHONUNBUFFERED=1
 cd "$SLURM_SUBMIT_DIR"
 # Sweep both similarities as separate runs (distinct MLflow runs). The first run
 # embeds the full pool (slow, cache miss); the rbf_cka run reuses the cache.
-srun uv run python -m repsim.run -m experiment=dinov2_scale_similarity similarity=linear,rbf_cka
+srun uv run python -m repsim.run -m experiment=granularity_similarity/dinov2_scale similarity=linear,rbf_cka

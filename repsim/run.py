@@ -8,9 +8,8 @@ import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
 
-from repsim.experiment import run_experiment
+from repsim.experiments import get_experiment
 from repsim.log import setup_logging
-from repsim.plots import plot_all
 from repsim.tracking import log_run
 
 
@@ -18,15 +17,19 @@ from repsim.tracking import log_run
 def main(cfg: DictConfig) -> None:
     """Run the experiment selected by the ``experiment`` config group.
 
-    Defaults to ``experiment=hierarchically_local_similarity``; override with
-    ``experiment=dinov2_scale_similarity`` or sweep both with
-    ``-m experiment=hierarchically_local_similarity,dinov2_scale_similarity``.
+    Each config under ``conf/experiment/`` sets ``experiment_name``, which picks
+    the matching ``repsim/experiments/<experiment_name>.py`` module. Sweep, e.g.::
+
+        uv run python -m repsim.run -m \\
+          experiment=granularity_similarity/cross_model,granularity_similarity/dinov2_scale \\
+          similarity=linear,rbf_cka
     """
     setup_logging()
     hydra_cfg = HydraConfig.get()
     out_dir = Path(hydra_cfg.runtime.output_dir)
-    results = run_experiment(cfg, output_dir=out_dir)
-    figures = plot_all(out_dir / "results.csv")
+    experiment = get_experiment(cfg.experiment_name)
+    results = experiment.run_experiment(cfg, output_dir=out_dir)
+    figures = experiment.plot_results(out_dir / "results.csv")
     log_run(
         cfg, results,
         artifacts=[out_dir / "results.csv", *figures],

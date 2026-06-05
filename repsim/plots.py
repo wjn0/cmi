@@ -1,7 +1,7 @@
 """Visualizations for the hierarchically-local similarity results.
 
 All functions take the long-format results DataFrame written by the experiment
-(see ``repsim.experiment.run_experiment``) and save a figure, returning its path.
+(see ``repsim.experiments.granularity_similarity.run_experiment``) and save a figure, returning its path.
 """
 
 from __future__ import annotations
@@ -305,6 +305,109 @@ def plot_pair_heatmap(results: pd.DataFrame, out_dir: Path) -> Path:
     fig.savefig(path, dpi=150)
     plt.close(fig)
     return path
+
+
+def _out_predictivity(results: pd.DataFrame, transform: str) -> pd.DataFrame:
+    """Per-(dataset, model) out-predictivity and probe accuracy for one transform.
+
+    Out-predictivity of model ``M`` on dataset ``D`` is the mean held-out score of
+    mapping ``M``'s features onto every other model's on ``D`` (``M`` as the
+    source). Accuracy is the model's own held-out probe accuracy on ``D`` (constant
+    across the rows where it is the source). The hypothesis is that, within a
+    dataset, the highest-out-predictivity model is the highest-accuracy one.
+    """
+    chosen = results[results["transform"] == transform]
+    pred = (
+        chosen.groupby(["dataset", "source"])["r2_eval"].mean()
+        .rename("pred_out").reset_index().rename(columns={"source": "model"})
+    )
+    acc = (
+        chosen[["dataset", "source", "acc_source"]].drop_duplicates()
+        .rename(columns={"source": "model", "acc_source": "accuracy"})
+    )
+    return pred.merge(acc, on=["dataset", "model"])
+
+
+def plot_predictivity_vs_accuracy(results: pd.DataFrame, out_dir: Path) -> Path:
+    """Scatter of out-predictivity vs probe accuracy, one panel per dataset.
+
+    Each model is a point; the model the others are most linearly expressible from
+    (highest out-predictivity, rightmost) is highlighted, as is the most accurate
+    (topmost). The hypothesis holds on a dataset when these are the same model;
+    the panel title flags whether the two argmaxes agree.
+    """
+    transform = _primary_transform(results)
+    table = _out_predictivity(results, transform)
+    datasets = sorted(table["dataset"].unique())
+    palette = _palette(sorted(table["model"].unique()))
+
+    with plt.rc_context(_NATURE_RC):
+        fig, axes = plt.subplots(1, len(datasets), figsize=(3.0 * len(datasets), 3.0),
+                                 squeeze=False)
+        for ax, dataset in zip(axes.flat, datasets):
+            sub = table[table["dataset"] == dataset]
+            best_pred = sub.loc[sub["pred_out"].idxmax(), "model"]
+            best_acc = sub.loc[sub["accuracy"].idxmax(), "model"]
+            for _, row in sub.iterrows():
+                ax.scatter(row["pred_out"], row["accuracy"], s=55, color=palette[row["model"]],
+                           linewidths=0, zorder=3)
+                ax.annotate(row["model"], (row["pred_out"], row["accuracy"]),
+                            xytext=(5, 4), textcoords="offset points", fontsize=7,
+                            color=palette[row["model"]])
+            _light_grid(ax, "both")
+            agree = best_pred == best_acc
+            ax.set_title(f"{dataset} — {'agree' if agree else 'disagree'}")
+            ax.set_xlabel(f"Out-predictivity (mean {_metric_label(transform)} as source)")
+            ax.set_ylabel("Held-out probe accuracy")
+        fig.suptitle("Local out-predictivity vs classification performance", fontsize=10)
+        path = out_dir / "predictivity_vs_accuracy.png"
+        fig.savefig(path)
+        plt.close(fig)
+    return path
+
+
+def plot_predictivity_accuracy_bars(results: pd.DataFrame, out_dir: Path) -> Path:
+    """Per-dataset grouped bars of each model's out-predictivity and accuracy.
+
+    Reads the two quantities on a shared model axis (twin y-axes, since R^2/CKA and
+    accuracy have different scales) so the rank agreement the scatter tests is
+    legible model-by-model.
+    """
+    transform = _primary_transform(results)
+    table = _out_predictivity(results, transform)
+    datasets = sorted(table["dataset"].unique())
+
+    with plt.rc_context(_NATURE_RC):
+        fig, axes = plt.subplots(1, len(datasets), figsize=(3.2 * len(datasets), 3.0),
+                                 squeeze=False)
+        for ax, dataset in zip(axes.flat, datasets):
+            sub = table[table["dataset"] == dataset].sort_values("pred_out", ascending=False)
+            x = np.arange(len(sub))
+            ax.bar(x - 0.2, sub["pred_out"], width=0.4, color=_OKABE_ITO[0], label="out-predictivity")
+            ax2 = ax.twinx()
+            ax2.bar(x + 0.2, sub["accuracy"], width=0.4, color=_OKABE_ITO[1], label="accuracy")
+            ax.set_xticks(x)
+            ax.set_xticklabels(sub["model"])
+            ax.set_ylabel(f"Out-predictivity ({_metric_label(transform)})", color=_OKABE_ITO[0])
+            ax2.set_ylabel("Probe accuracy", color=_OKABE_ITO[1])
+            ax2.spines["top"].set_visible(False)
+            ax.set_title(dataset)
+        fig.suptitle("Out-predictivity and accuracy by model", fontsize=10)
+        path = out_dir / "predictivity_accuracy_bars.png"
+        fig.savefig(path)
+        plt.close(fig)
+    return path
+
+
+def plot_local_similarity_performance(results_csv: Path, out_dir: Path | None = None) -> list[Path]:
+    """Generate the local_similarity_performance figures from a results CSV."""
+    results = pd.read_csv(results_csv)
+    out_dir = out_dir or results_csv.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return [
+        plot_predictivity_vs_accuracy(results, out_dir),
+        plot_predictivity_accuracy_bars(results, out_dir),
+    ]
 
 
 def plot_all(results_csv: Path, out_dir: Path | None = None) -> list[Path]:

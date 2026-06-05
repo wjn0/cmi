@@ -22,30 +22,34 @@ log = logging.getLogger(__name__)
 def _summary_metrics(results: pd.DataFrame) -> dict[str, float]:
     """Aggregate held-out / in-sample scores per transform for at-a-glance tracking."""
     metrics: dict[str, float] = {"n_rows": float(len(results))}
+    if "transform" not in results.columns:
+        return metrics
     for transform, sub in results.groupby("transform"):
         metrics[f"{transform}/heldout_r2_mean"] = float(sub["r2_eval"].mean())
         metrics[f"{transform}/insample_r2_mean"] = float(sub["r2_train"].mean())
     return metrics
 
 
+# Scalar config knobs worth tracking; experiment-specific ones are simply absent
+# from other experiments' configs and are skipped.
+_PARAM_KEYS = (
+    "seed", "n_fit_samples", "n_eval_samples", "per_class_limit", "whiten",
+    "device", "n_random_targets", "max_ancestor_levels", "max_descendant_levels",
+)
+
+
 def _params(cfg: DictConfig) -> dict[str, object]:
     """Flatten the config knobs worth tracking into MLflow params."""
     c = OmegaConf.to_container(cfg, resolve=True)
-    return {
-        "seed": c["seed"],
-        "n_fit_samples": c["n_fit_samples"],
-        "n_eval_samples": c["n_eval_samples"],
-        "per_class_limit": c["per_class_limit"],
-        "transforms": ",".join(c["transforms"]),
-        "whiten": c["whiten"],
-        "device": c.get("device"),
-        "models": ",".join(m["name"] for m in c["models"]),
-        "dataset": c["dataset"]["hf_id"],
-        "split": c["dataset"]["split"],
-        "n_random_targets": c["n_random_targets"],
-        "max_ancestor_levels": c["max_ancestor_levels"],
-        "max_descendant_levels": c["max_descendant_levels"],
-    }
+    params: dict[str, object] = {k: c[k] for k in _PARAM_KEYS if k in c}
+    params["transforms"] = ",".join(c["transforms"])
+    params["models"] = ",".join(m["name"] for m in c["models"])
+    if "dataset" in c:  # granularity_similarity: a single dataset + split
+        params["dataset"] = c["dataset"]["hf_id"]
+        params["split"] = c["dataset"]["split"]
+    if "datasets" in c:  # local_similarity_performance: a dataset list
+        params["datasets"] = ",".join(d["hf_id"] for d in c["datasets"])
+    return params
 
 
 def _run_name_and_tags(
@@ -85,7 +89,8 @@ def log_run(
             experiment name (``tracking_uri: null`` uses ``$MLFLOW_TRACKING_URI``).
         results: The long-format results DataFrame.
         artifacts: Files to attach to the run (``results.csv``, figures).
-        experiment: The experiment config group (e.g. ``dinov2_scale_similarity``),
+        experiment: The experiment config group choice (e.g.
+            ``granularity_similarity/dinov2_scale``),
             used to name and tag the run.
         extra_tags: Optional extra MLflow tags.
     """

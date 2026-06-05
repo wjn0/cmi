@@ -1,4 +1,9 @@
-"""The ``hierarchically_local_similarity`` experiment.
+"""The ``granularity_similarity`` experiment.
+
+How does cross-model representational similarity vary with the granularity
+(breadth) of the ImageNet/WordNet hierarchy region it is measured over? Two
+configurations share this design: ``cross_model`` (DINOv2 / SigLIP / MAE) and
+``dinov2_scale`` (the four DINOv2 scales S/B/L/g).
 
 Pretrained vision models are embedded once over the full 1000-class ImageNet pool.
 For each of several target WordNet nodes (an explicit list plus randomly sampled
@@ -322,3 +327,10 @@ def _evaluate(
              len(all_nodes) - skipped, skipped, n_fit + n_eval,
              time.monotonic() - start, len(records))
     return records
+
+
+def plot_results(results_csv: Path) -> list[Path]:
+    """Generate this experiment's figures next to ``results_csv``."""
+    from repsim.plots import plot_all
+
+    return plot_all(results_csv)

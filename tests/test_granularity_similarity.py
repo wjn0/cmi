@@ -1,4 +1,4 @@
-"""Tests for the experiment's per-node fit/held-out splitting."""
+"""Tests for the granularity_similarity experiment's per-node fit/held-out splitting."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from omegaconf import OmegaConf
 
-from repsim.experiment import _evaluate, _rows_by_class
+from repsim.experiments.granularity_similarity import _evaluate, _rows_by_class
 from repsim.imagenet_hierarchy import HierarchyNode
 
 

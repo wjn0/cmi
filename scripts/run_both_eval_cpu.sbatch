@@ -16,5 +16,5 @@ export HF_DATASETS_OFFLINE=1
 
 cd "$SLURM_SUBMIT_DIR"
 srun uv run python -m repsim.run -m \
-  experiment=hierarchically_local_similarity,dinov2_scale_similarity \
+  experiment=granularity_similarity/cross_model,granularity_similarity/dinov2_scale \
   device=cpu

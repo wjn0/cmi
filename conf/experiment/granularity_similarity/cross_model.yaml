@@ -1,6 +1,6 @@
 # @package _global_
 # ============================================================================
-# Experiment: hierarchically_local_similarity
+# Experiment: granularity_similarity / configuration: cross_model
 # ============================================================================
 # Question: how well can one pretrained vision model's representation be mapped
 # onto another's, and how does that alignment quality depend on the *granularity*
@@ -8,7 +8,7 @@
 # over? Hypothesis: alignment is *hierarchically local* -- finer (narrower)
 # regions align better than coarser (broader) ones.
 #
-# Procedure (shared design; see conf/config.yaml for the sweep + transforms):
+# Procedure (shared design; see _shared.yaml and conf/config.yaml):
 #   1. Choose target nodes in the WordNet noun hierarchy: an explicit list plus
 #      `n_random_targets` randomly sampled internal nodes whose subtree holds
 #      between `random_target_min_classes` and `random_target_max_classes` leaf
@@ -42,6 +42,10 @@
 #
 # Output: results.csv, one row per (target, node, ordered model pair, transform).
 # ============================================================================
+
+defaults:
+  - granularity_similarity/_shared
+  - _self_
 
 # Targets ------------------------------------------------------------------
 random_target_min_classes: 5 # min leaf classes in a sampled target's subtree.

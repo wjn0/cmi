@@ -1,0 +1,47 @@
+# @package _global_
+# ============================================================================
+# Experiment: granularity_similarity -- shared design
+# ============================================================================
+# Shared by the two configurations (cross_model, dinov2_scale), which differ
+# only in their model set and fit sizes. The full per-configuration scientific
+# descriptions live in those files; the design implemented by
+# repsim/experiments/granularity_similarity.py is:
+#
+#   1. Choose target WordNet nodes (explicit + randomly sampled at moderate
+#      breadth) and build each target's chain of descendant/self/ancestor
+#      evaluation nodes; node breadth |classes(n)| is the granularity axis.
+#   2. NULL CONTROL: size-matched random-class nodes per distinct breadth,
+#      isolating semantic locality from sheer breadth.
+#   3. Embed the full 1000-class ImageNet pool ONCE per model (native pooled
+#      features, up to per_class_limit images per class, shared seed).
+#   4. At each node, a fixed-size disjoint fit/held-out split removes the
+#      sample-size confound; score every ordered model pair under the selected
+#      `similarity` metric (linear affine least squares or RBF CKA).
+#
+# Output: results.csv, one row per (target, node, ordered model pair, transform).
+# ============================================================================
+
+experiment_name: granularity_similarity
+
+# Targets ------------------------------------------------------------------
+target_nodes: [feline]       # explicit starting nodes (WordNet lemma or synset)
+n_random_targets: 75         # additional randomly sampled starting nodes
+random_target_max_classes: 40 # max ImageNet leaf classes in a sampled target's subtree
+# random_target_min_classes is configuration-specific (it depends on n_fit_samples).
+
+# Hierarchy ----------------------------------------------------------------
+max_ancestor_levels: 4       # ancestor (coarser) levels above each target
+max_descendant_levels: 3     # descendant (finer) levels below each target
+null_replicates: 4           # random size-matched null nodes per distinct breadth
+
+# Sampling & data sufficiency ----------------------------------------------
+# Held-out is a disjoint random split of each node's own images, so a node needs
+# n_fit_samples + n_eval_samples images. n_fit_samples is configuration-specific
+# (it scales with the largest model dim; see each configuration file).
+per_class_limit: 1000        # images per class drawn from the pool
+n_eval_samples: 250          # fixed held-out images per node for held-out R^2.
+
+# Dataset ------------------------------------------------------------------
+dataset:
+  hf_id: benjamin-paine/imagenet-1k-256x256
+  split: train               # single split; held-out is carved from each node

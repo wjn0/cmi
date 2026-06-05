@@ -6,7 +6,7 @@
 #SBATCH --time=08:00:00
 #SBATCH --output=outputs/slurm_logs/dinov2_scales_eval_%j.log
 
-# Eval-only re-run of dinov2_scale_similarity on CPU, reusing the cached full-pool
+# Eval-only re-run of granularity_similarity/dinov2_scale on CPU, reusing the cached full-pool
 # embeddings (the four DINOv2 scales, already embedded on GPU). The eval is pure
 # CPU work (per-node affine least-squares lstsq + RBF-CKA Gram for 12 ordered
 # scale pairs at n_fit=7680 -- both similarities run in this one pass), so it has
@@ -24,4 +24,4 @@ export HF_DATASETS_OFFLINE=1
 
 cd "$SLURM_SUBMIT_DIR"
 # Sweep both similarities as separate runs (distinct MLflow runs), reusing the cache.
-srun uv run python -m repsim.run -m experiment=dinov2_scale_similarity similarity=linear,rbf_cka device=cpu
+srun uv run python -m repsim.run -m experiment=granularity_similarity/dinov2_scale similarity=linear,rbf_cka device=cpu

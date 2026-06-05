@@ -1,0 +1,62 @@
+# @package _global_
+# ============================================================================
+# Experiment: local_similarity_performance
+# ============================================================================
+# Hypothesis: on a dataset occupying a SMALL region of the training manifold,
+# the model that best one-way (asymmetric) linearly PREDICTS the others on that
+# region also classifies it best. For models A, B, C and region D, define the
+# out-predictivity of A as the mean R^2 of mapping A's features onto each other
+# model's on D:
+#
+#     pred_out(A; D) = mean_{M != A} R^2(A -> M; D),     [held-out, fit on train]
+#
+# and claim argmax_M pred_out(M; D) == argmax_M acc(M, D). Two narrow regions far
+# from the broad ImageNet pool the models were (self-)trained on:
+#   - PCam   : histopathology patches, tumour vs. normal (binary).
+#   - CelebA : a face attribute (default: Smiling) (binary).
+#
+# Procedure (repsim/experiments/local_similarity_performance.py): for each
+# dataset D and model M_i, (1) embed D's train+test splits with M_i's native
+# pooled features (cached, balanced per-class sample, shared seed), (2) fit a
+# standardised logistic-regression linear probe on train and record held-out test
+# accuracy acc(M_i, D), (3) score every ORDERED model pair (M_i -> M_j) under the
+# selected `similarity` metric (asymmetric linear R^2, or symmetric RBF CKA), fit
+# on train and scored on the same held-out test split as the probe.
+#
+# Output: results.csv, one row per (dataset, ordered model pair, transform),
+# carrying r2_train/r2_eval and each member's probe accuracy (acc_source/
+# acc_target); per-model out-predictivity is derived in the plots.
+# ============================================================================
+
+experiment_name: local_similarity_performance
+
+# Models -------------------------------------------------------------------
+# Same trio as granularity_similarity/cross_model.
+models:
+  - {name: dinov2, backend: transformers, hf_id: facebook/dinov2-base,                  pooling: pooler}
+  - {name: siglip, backend: timm,         hf_id: vit_base_patch16_siglip_224.v2_webli,  pooling: head}
+  - {name: mae,    backend: timm,         hf_id: vit_base_patch16_224.mae,              pooling: avg}
+
+# Datasets -----------------------------------------------------------------
+# Narrow, specialised regions with a straightforward binary task each. `train`
+# fits the probes (and the similarity transforms), `test` is held out for both
+# accuracy and held-out R^2. `label_column` is cast to {0, 1}.
+datasets:
+  - {name: pcam,   hf_id: 1aurent/PatchCamelyon, label_column: label,   train_split: train, test_split: test}
+  - {name: celeba, hf_id: flwrlabs/celeba,        label_column: Smiling, train_split: train, test_split: test}
+
+# Classification probe -------------------------------------------------------
+probe:
+  kind: logistic              # standardised L2 logistic-regression linear probe
+  C: 1.0                      # inverse L2 strength
+  max_iter: 1000
+
+# Sampling -----------------------------------------------------------------
+# Balanced per-class samples. The largest model dim is 768, so the train sample
+# (2 classes x n_train_per_class) must exceed it for an over-determined linear fit.
+n_train_per_class: 2500       # 5000 train images (>768) per dataset
+n_test_per_class: 1000        # 2000 held-out test images per dataset
+
+# Runtime ------------------------------------------------------------------
+batch_size: 64
+num_workers: 8                # DataLoader workers for parallel decode/preprocess

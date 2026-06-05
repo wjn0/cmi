@@ -2,20 +2,31 @@
 
 Experiments in cross-model representation similarity, alignment, and identifiability.
 
-## Running the experiments
+## Experiments
 
-The model set is the `experiment` config group, the similarity metric is the
-`similarity` group (`linear` or `rbf_cka`); each lands as its own MLflow run.
-Sweep both axes with Hydra multirun (`-m`) to cover the full 2×2:
+Each experiment is a module in `repsim/experiments/` with matching configs in
+`conf/experiment/`; configurations of the same experiment are files inside its
+config directory:
+
+- `granularity_similarity` — how representational similarity varies with the
+  granularity of the ImageNet/WordNet hierarchy region it is measured over.
+  - `experiment=granularity_similarity/cross_model` — DINOv2 / SigLIP / MAE
+  - `experiment=granularity_similarity/dinov2_scale` — the four DINOv2 S/B/L/g scales
+- `local_similarity_performance` — on a narrow data region (PCam, CelebA), does
+  the model that best one-way (asymmetric) linearly predicts the others also
+  classify that region best?
+  - `experiment=local_similarity_performance`
+
+The similarity metric is the `similarity` group (`linear` or `rbf_cka`); each
+(experiment, similarity) pair lands as its own MLflow run. Sweep both axes with
+Hydra multirun (`-m`):
 
 ```bash
 uv run python -m repsim.run -m \
-  experiment=hierarchically_local_similarity,dinov2_scale_similarity \
+  experiment=granularity_similarity/cross_model,granularity_similarity/dinov2_scale \
   similarity=linear,rbf_cka
 ```
 
-- `experiment=hierarchically_local_similarity` — cross-model (DINOv2 / SigLIP / MAE)
-- `experiment=dinov2_scale_similarity` — within-DINO (the four S/B/L/g scales)
 - `similarity=linear` — affine least-squares R²; `similarity=rbf_cka` — RBF CKA
 - **linear CKA**: `similarity=linear whiten=true` (whitening makes `linear` == linear CKA)
 

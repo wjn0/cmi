@@ -6,7 +6,7 @@
 #SBATCH --time=08:00:00
 #SBATCH --output=outputs/slurm_logs/whiten_%j.log
 
-# Re-evaluate the hierarchically_local_similarity experiment with PCA whitening,
+# Re-evaluate the granularity_similarity/cross_model experiment with PCA whitening,
 # on CPU, reusing the cached full-pool embeddings (verified by scripts/cache_check.py).
 # whiten=true + the linear similarity is linear CKA; rbf_cka is excluded because it
 # double-centres its Gram and so requires whiten=false (hence similarity=linear).
